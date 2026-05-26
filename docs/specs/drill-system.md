@@ -1,25 +1,18 @@
 # RinkRocket – Drill System Specification
 
-## Overview
+This spec defines how hockey drills are modeled, stored, rendered, and shared. It is the canonical reference for the data layer.
 
-The Drill System defines how hockey drills are created, edited, stored, rendered, and shared within RinkRocket.
+UX and quality bar for the editor live in `canvas-ux.md`.
 
-Unlike traditional hockey tools that rely on rigid templates, RinkRocket introduces a **freeform, canvas-based drill builder** inspired by Figma and Excalidraw, combined with **structured hockey-specific primitives**.
-
-> **Scope of this spec:** the MVP drill composer (static, multi-frame). Simulation, behaviors, and playback are out of scope and have a separate future spec (`drill-simulation.md`).
+> **Scope:** MVP drill composer (static, multi-frame). Simulation, behaviors, and playback are out of scope here.
 
 ---
 
 ## Core Concept
 
-A drill is a **sequence of frames** rendered on a hockey rink canvas. Each frame contains hockey-specific elements (players, cones, pucks, paths, zones, labels) at fixed positions. Coaches step through frames to communicate progression.
+A drill is a **sequence of frames** rendered on a hockey rink canvas. Each frame contains hockey-specific elements (players, pucks, cones, paths, zones, labels) at fixed positions. Coaches step through frames to communicate progression.
 
-This enables:
-- flexible drill creation
-- multi-step progression
-- visual clarity
-- fast editing
-- a clean migration path to animation later (frames become keyframes)
+The model is structured (rink-relative coordinates, typed primitives) so it can extend cleanly into animation and simulation later.
 
 ---
 
@@ -27,22 +20,18 @@ This enables:
 
 ### Primary
 - A coach can create a usable drill in under 60 seconds
-- The canvas works well on web in MVP and renders read-only on mobile and tablet
+- The canvas works on desktop browsers in MVP and renders correctly on mobile and tablet web (responsive + PWA)
 - Multi-frame progression is supported from day one
 - The data model is forward-compatible with future animation
 
-### Secondary
-- Drill reuse and templating
-- Export to image and PDF
-- Easy sharing with players and parents
-
 ### Non-goals (MVP)
 - Full Figma-level editing capabilities
-- Animation, playback, or simulation
+- Animation, playback, simulation
 - Real-time collaboration
-- Mobile-native drill editing (mobile is view-only in MVP)
+- Native mobile/tablet apps
 - AI-generated drills
 - Behaviors, events, or physics
+- Templating and drill reuse libraries (post-MVP)
 
 ---
 
@@ -50,45 +39,107 @@ This enables:
 
 All drill elements live in a **rink-relative coordinate space**, not pixel space.
 
-- The rink is modeled as 200 ft x 85 ft (NHL regulation), as a normalized rectangle.
+- The rink is modeled as **200 ft × 85 ft** (NHL regulation), as a normalized rectangle.
 - Coordinate origin `(0, 0)` is the **top-left of the rink rectangle**.
 - X increases to the right (toward the right end boards).
 - Y increases downward (toward the bottom boards).
 - Coordinates are stored as **floating-point feet**, not pixels.
-- The renderer is responsible for scaling rink-feet → screen-pixels.
+- The renderer is responsible for scaling rink-feet to screen-pixels.
 
 Supported rink views:
-- `full` — full sheet (200 x 85)
-- `half` — one half (100 x 85)
-- `neutral-zone` — center region (50 x 85)
-- `offensive-zone` — end zone (50 x 85)
 
-A drill records which `rinkView` it was authored for. The renderer crops and scales accordingly.
+| `rinkView` | Dimensions  | Use case                         |
+| ---------- | ----------- | -------------------------------- |
+| `full`     | 200 × 85 ft | Full-ice drills                  |
+| `half`     | 100 × 85 ft | Half-ice drills                  |
+| `zone`     | 50 × 85 ft  | Zone drills (offensive/defensive geometry is identical) |
+
+The renderer may rotate the rendered rink (e.g. portrait on phones), but stored coordinates remain in landscape rink space.
+
+---
+
+## Rink Anchors
+
+The rink has named **anchor points** that map to coordinates. Anchors serve two purposes:
+
+1. **Snap-to-anchor** in the editor (drag a player near the faceoff dot, it snaps).
+2. **Semantic positioning** for AI agents (see `ai-interface.md`).
+
+Anchors are **derived**, not stored. Drill data always stores absolute coordinates. Anchors are resolved by `packages/core/src/rink/anchors.ts` based on `rinkView`.
+
+### Anchor catalog
+
+```ts
+type RinkAnchor =
+  // Lines (full view coordinates shown; resolver remaps for half / zone views)
+  | 'goal-line-left'        // x = 11
+  | 'goal-line-right'       // x = 189
+  | 'blue-line-left'        // x = 75
+  | 'blue-line-right'       // x = 125
+  | 'red-line'              // x = 100
+
+  // Faceoff dots
+  | 'faceoff-center'                  // (100, 42.5)
+  | 'faceoff-offensive-left'          // attacking team's offensive zone, left dot
+  | 'faceoff-offensive-right'
+  | 'faceoff-defensive-left'
+  | 'faceoff-defensive-right'
+  | 'faceoff-neutral-left-top'
+  | 'faceoff-neutral-left-bottom'
+  | 'faceoff-neutral-right-top'
+  | 'faceoff-neutral-right-bottom'
+
+  // Nets and creases
+  | 'net-left'              // center of left net
+  | 'net-right'
+  | 'crease-left'           // center of left crease
+  | 'crease-right'
+
+  // Zone centroids (useful for "place 3 players in the offensive zone")
+  | 'zone-offensive'
+  | 'zone-neutral'
+  | 'zone-defensive';
+```
+
+### Resolver contract
+
+```ts
+function resolveAnchor(name: RinkAnchor, rinkView: RinkView): Vec;
+function listAnchors(rinkView: RinkView): Array<{ name: RinkAnchor; position: Vec }>;
+```
+
+- Coordinates are returned in the same rink-feet space the drill data uses.
+- For `half` and `zone` views, anchors outside the visible region are still resolvable but may return coordinates outside the view (the renderer clips appropriately).
+- Anchors that don't exist in a view (e.g. `red-line` in a `zone` view) throw a typed error.
+
+### Why anchors aren't stored
+
+If a drill stored "player at faceoff-center" rather than `(100, 42.5)`, dragging the player a few feet would create ambiguity: is it still anchored, or now absolute? Keeping storage as coordinates eliminates this. The editor and AI tools use anchors as input sugar that immediately resolves.
 
 ---
 
 ## Drill Data Model
 
-All identifiers are stable, opaque strings.
+All identifiers are stable, opaque strings (UUID or NanoID).
+All colors are `#RRGGBB` or `#RRGGBBAA`.
 
 ```ts
 type Drill = {
   id: string;
-  schemaVersion: 1;
+  schemaVersion: number;          // starts at 1, bumps on breaking changes
   ownerId: string;
   name: string;
   description?: string;
   durationSec?: number;
-  tags: string[];
-  rinkView: 'full' | 'half' | 'neutral-zone' | 'offensive-zone';
+  tags?: string[];
+  rinkView: 'full' | 'half' | 'zone';
   canvasState: CanvasState;
-  createdAt: string;
+  createdAt: string;              // ISO timestamp
   updatedAt: string;
 };
 
 type CanvasState = {
-  frames: Frame[];
-  activeFrameId: string;
+  frames: Frame[];                // always at least one frame
 };
 
 type Frame = {
@@ -105,56 +156,81 @@ type DrillElement =
   | ZoneElement
   | TextElement;
 
-type ElementBase = {
-  id: string;
-  x: number;
-  y: number;
-  rotation?: number;
-};
+type Vec = { x: number; y: number };   // rink feet
 
-type PlayerElement = ElementBase & {
+type PlayerElement = {
   type: 'player';
-  team: 'home' | 'away' | 'neutral';
-  number?: string;
-  role?: string;
+  id: string;
+  position: Vec;
+  rotation?: number;              // degrees, default 0
+  team: 'team-a' | 'team-b';
+  number?: string;                // jersey number / label
+  role?: 'F' | 'D' | 'G';         // optional position role
 };
 
-type PuckElement = ElementBase & { type: 'puck' };
+type PuckElement = {
+  type: 'puck';
+  id: string;
+  position: Vec;
+};
 
-type ConeElement = ElementBase & { type: 'cone' };
+type ConeElement = {
+  type: 'cone';
+  id: string;
+  position: Vec;
+};
 
-type PathElement = ElementBase & {
+type PathElement = {
   type: 'path';
+  id: string;
   kind: 'skate' | 'pass' | 'shot';
-  points: Array<{ x: number; y: number }>;
+  points: Vec[];                  // absolute rink-feet coordinates
   endStyle?: 'arrow' | 'none';
 };
 
-type ZoneElement = ElementBase & {
+type ZoneElement = {
   type: 'zone';
+  id: string;
+  position: Vec;                  // top-left corner
+  rotation?: number;
   shape: 'rect' | 'ellipse';
-  width: number;
-  height: number;
-  fill?: string;
-  stroke?: string;
+  width: number;                  // rink feet
+  height: number;                 // rink feet
+  fill?: string;                  // #RRGGBB[AA]
+  stroke?: string;                // #RRGGBB[AA]
   label?: string;
 };
 
-type TextElement = ElementBase & {
+type TextElement = {
   type: 'text';
+  id: string;
+  position: Vec;
+  rotation?: number;
   content: string;
-  fontSize?: number;
+  size: 'sm' | 'md' | 'lg';       // semantic, renderer maps to pixels
 };
 ```
 
+### Notes on the model
+
+- **`PathElement` has no `position`** — its `points` are absolute. This avoids the relative-vs-absolute ambiguity.
+- **`rotation` is only on elements where it makes sense** (Player, Zone, Text). Pucks, cones, and paths have no rotation.
+- **Active frame is editor state, not data state.** It is not stored in `CanvasState`. On load, the first frame is active.
+- **`team` uses neutral labels** (`team-a` / `team-b`). The renderer assigns colors via design tokens.
+- **`size` on text is semantic** (`sm` / `md` / `lg`). Coaches don't think in font sizes; renderer maps to feet.
+
 ### Versioning
 
-- `schemaVersion` is required and starts at `1`.
-- Any breaking change to a field bumps `schemaVersion`.
-- Migrations live in `packages/core/src/drill/migrations/` and are applied on read.
-- Storage always writes the latest version.
+- `schemaVersion` starts at `1`. Bump on any breaking change.
+- Migrations live in `packages/core/src/drill/migrations/`.
+- Migrations apply on read. Writes always use the latest version.
+- A migration is `(old: unknown) => Drill` and is responsible for shape validation.
 
-### Practice Model
+---
+
+## Practice Model
+
+A practice is an ordered collection of drills. For MVP, practices are intentionally simple.
 
 ```ts
 type Practice = {
@@ -163,33 +239,44 @@ type Practice = {
   name: string;
   description?: string;
   durationSec?: number;
-  drills: PracticeDrill[];
+  drillIds: string[];             // ordered; source of truth for drill order
   createdAt: string;
   updatedAt: string;
 };
+```
 
-type PracticeDrill = {
-  id: string;
-  drillId: string;
-  position: number;
-  notes?: string;
-};
+There is no `PracticeDrill` join row in MVP — practices reference drills by id, ordered by array position. Per-drill notes and metadata are post-MVP.
 
+---
+
+## Sharing Model
+
+Drills (and later practices) can be shared via opaque public links.
+
+```ts
 type ShareLink = {
   id: string;
-  practiceId: string;
-  token: string;
+  resourceType: 'drill' | 'practice';
+  resourceId: string;
+  token: string;                  // long, opaque, URL-safe
   createdAt: string;
   revokedAt?: string;
 };
 ```
+
+Rules:
+- A resource may have multiple active share links (different audiences, different revocation lifetimes).
+- Revoking a link sets `revokedAt`. The token immediately stops working.
+- Tokens are never sequential; use a CSPRNG-backed generator (e.g. NanoID, 21+ chars).
+- A shared page is read-only and requires no login.
 
 ---
 
 ## MVP Element Set
 
 The drill composer ships with exactly:
-- Player (home / away / neutral, optional jersey number)
+
+- Player (team-a / team-b, optional jersey number, optional role)
 - Puck
 - Cone
 - Path (skate / pass / shot)
@@ -206,26 +293,10 @@ Anything else is post-MVP.
 - New drills start with a single empty frame.
 - Frames are ordered.
 - Coaches can add, duplicate, reorder, and delete frames.
-- Each frame is a full snapshot of element positions; there is no inheritance between frames in MVP.
-- "Duplicate frame" is the primary way to build progression: copy frame N, advance to frame N+1, move things.
+- Each frame is a full snapshot of element positions; **there is no inheritance between frames** in MVP.
+- "Duplicate frame" is the primary way to build progression: duplicate frame N, advance to N+1, move things.
 
-This deliberately keeps MVP simple. Inheritance and keyframing are Stage 2 problems.
-
----
-
-## Editing Behavior (MVP, web only)
-
-- Single-select with click
-- Multi-select with shift-click or marquee
-- Drag to move
-- Delete with Delete or Backspace
-- Undo / redo at the frame level
-- Snap-to-grid optional, off by default
-- Pan and zoom on the canvas
-- Explicit tool modes (select, player, puck, cone, path, zone, text) to avoid gesture conflicts
-- Keyboard shortcuts on web
-
-Touch editing on mobile is **not** in MVP; mobile is read-only.
+This deliberately keeps MVP simple. Inheritance and keyframing belong to Stage 2.
 
 ---
 
@@ -233,51 +304,43 @@ Touch editing on mobile is **not** in MVP; mobile is read-only.
 
 - Drills are stored in Supabase as a row with `canvas_state` as `jsonb`.
 - The drill JSON is the source of truth; rendering is deterministic.
-- The editor uses a debounced "save" transaction per change batch to avoid autosave races.
-- Drill thumbnails for the library are rendered on demand and cached in storage.
-
----
-
-## Sharing
-
-- A practice can have one active share link at a time.
-- Share links are public-by-token in MVP (no login required to view).
-- Tokens are long, opaque, URL-safe; never sequential ids.
-- Share links can be revoked, which invalidates the token.
-- The shared page is read-only and renders the practice with each drill expandable and steppable through frames.
+- Drill thumbnails for the library are rendered server-side or client-side on demand and cached in storage.
+- Save semantics (debouncing, conflict handling) are an editor concern, not part of this spec.
 
 ---
 
 ## Export
 
 MVP supports:
-- Export drill (current frame or all frames) as PNG
-- Export practice as multi-page PDF
+- Export drill (current frame or all frames) as **PNG**.
 
-Export is high-value for coaches who print or text their practice plans.
+PDF export is **post-MVP**.
 
 ---
 
 ## Rendering
 
-- Web (MVP editor and viewer): SVG-based renderer in `packages/canvas`.
-- Mobile (MVP viewer): the same `packages/canvas` rendering layer running on `react-native-svg`.
+- Web: SVG-based renderer in `apps/web`.
 - The renderer takes `CanvasState`, `rinkView`, and a target size, and produces output deterministically.
-- Canvas tech decision is open; current default is plain SVG. Alternatives under consideration: `react-konva`, `@shopify/react-native-skia`. See `BACKLOG.md`.
+- Player colors, path stroke styles, and zone fills come from design tokens in `packages/ui` (when extracted) so the model stays presentation-agnostic.
+- Canvas tech decision (plain SVG vs `react-konva` vs Skia) is tracked in `docs/decisions.md` and resolved in Phase 0.
 
 ---
 
 ## Open Questions
 
-- Stroke style conventions for skate, pass, and shot — pick a published standard (USA Hockey or Hockey Canada).
-- Whether numbered players auto-increment per team.
-- Whether zone shapes support rotation in MVP.
-- Whether free-draw annotations are supported in MVP (current default: no).
+Tracked in `docs/decisions.md`:
+- Stroke style conventions for skate / pass / shot
+- Whether numbered players auto-increment per team
+- Whether zone shapes support rotation in MVP (current default: yes, via `rotation`)
+- Whether free-draw annotations are supported in MVP (current default: no)
 
 ---
 
 ## Related
 
 - Product overview: `PROJECT.md`
-- Backlog and milestones: `BACKLOG.md`
+- Canvas UX and quality bar: `canvas-ux.md`
+- AI / agent integration: `ai-interface.md`
+- Phased delivery plan: `BACKLOG.md`
 - Composer UI design: `packages/design/drill-composer.pen`
