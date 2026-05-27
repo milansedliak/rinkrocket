@@ -11,7 +11,6 @@ This file tracks open product/technical decisions and a lightweight log of resol
 
 ## Open Decisions
 
-- `[?]` **Canvas tech**: plain SVG vs `react-konva` vs `@shopify/react-native-skia` (resolved in Phase 0 spike)
 - `[?]` **Email auth flavor**: magic link vs password (low stakes; pick during Phase 1)
 - `[?]` **Stroke style conventions** for skate / pass / shot — pick a published standard (USA Hockey or Hockey Canada)
 - `[?]` **Player numbering** — auto-increment per team or always blank by default
@@ -117,6 +116,48 @@ Each entry: short title, date, status, context, decision, consequences.
   - Validation layer is the airlock — malformed patches are rejected with structured errors the AI can iterate on.
   - Undo/redo entries are also `DrillPatch` operations, so AI-applied changes are first-class history.
   - No autonomous AI mutations of user drills.
+
+### ADR-013: Default canvas tech is plain SVG
+- **Date:** 2026-05-26
+- **Status:** Decided
+- **Context:** Earlier plan called for a Phase 0 canvas spike to choose between plain SVG, `react-konva`, and `@shopify/react-native-skia`. We removed Phase 0 — direction is locked, time-to-real-product matters more than picking a "perfect" renderer up front.
+- **Decision:** Use plain SVG (React-driven) as the canvas renderer in Phase 1 and Phase 2. The renderer sits behind a stable interface (`packages/canvas` when extracted) so we can swap implementations later without changing the data model or the editor logic.
+- **Why SVG:**
+  - Hockey drills are small (typically <100 elements per frame, <10 frames). SVG handles this comfortably.
+  - DOM-native: best-in-class accessibility, hit testing, focus, keyboard, screen reader support.
+  - Trivial to render server-side for share pages (`<img src="…">` works).
+  - No additional dependency for a feature that is already complex.
+  - Same renderer works for thumbnail generation and PNG export.
+- **Consequences:**
+  - We trust Phase 2's CI-enforced perf budget to detect regressions early.
+  - If perf falls short with realistic drills, swap to `react-konva` (Canvas2D) behind the same interface — a contained rewrite, not an architectural reset.
+  - We avoid Skia entirely until / unless we ship a native app and need a shared renderer.
+
+### ADR-015: Canvas ships first, local-only. Auth and cloud come later.
+- **Date:** 2026-05-27
+- **Status:** Decided
+- **Context:** Earlier plan had Phase 1 (Vertical Slice with auth + save + share) before Phase 2 (Canvas MVP). That order forced us to build auth, RLS, share links, and Supabase plumbing **before** the actual product was good. It also slowed the canvas itself by spending time on infrastructure no user has asked for yet.
+- **Decision:** The canvas + drill system is **Phase 1**, shipped as a **local-only** app. No login, no Supabase, no share links. Drills live in IndexedDB. Auth, cloud sync, and sharing land in **Phase 2** as a strict additive layer.
+- **Why:**
+  - Spends 100% of the initial build on the differentiator (the canvas).
+  - Coaches can try the product instantly — no signup wall.
+  - The same drill JSON shape lives in IndexedDB and (later) Supabase, so the Phase 2 migration is a sync, not a rewrite.
+  - All AI-readiness foundations (Zod schemas, anchors, tool surface, `DrillPatch`, schema export) still land in Phase 1; they don't depend on the backend.
+- **Consequences:**
+  - Phase 1 is the biggest, most important phase. It owns the canvas quality bar end-to-end.
+  - Phase 2 takes on the local→cloud migration as a one-time task.
+  - Anonymous use is supported permanently — sign-in is opt-in.
+  - The tool surface is implemented twice: client-side in Phase 1, server-side (Server Actions) in Phase 2. Both satisfy the same TypeScript interface so AI assist doesn't care which is active.
+
+### ADR-014: No formal validation phase
+- **Date:** 2026-05-26
+- **Status:** Decided
+- **Context:** Earlier plan included a Phase 0 with coach interviews and a canvas tech spike before any real implementation work.
+- **Decision:** Phases start at 1. We validate continuously via the Phase 2 manual coach acceptance tests, the Phase 3 "real coaches build a real practice" gate, and the Phase 4 beta cohort.
+- **Consequences:**
+  - Faster start; no upfront research phase.
+  - Validation moves into the build itself: Phase 2 cannot be marked done until ≥3 real coaches pass the canvas acceptance bar in `canvas-ux.md`.
+  - If user research reveals the product is wrong, we course-correct mid-build rather than gating the whole project on it.
 
 ### ADR-012: MCP server is the canonical external integration
 - **Date:** 2026-05-26

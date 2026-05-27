@@ -474,18 +474,19 @@ Validation errors are structured so the AI can repair them and retry:
 
 ## Foundations to Build in MVP
 
-So Phase 5 can ship quickly, build these in earlier phases:
+So Phase 5 can ship quickly, build these earlier:
 
-| Foundation                                   | Phase | Why                                  |
-| -------------------------------------------- | ----- | ------------------------------------ |
-| Zod schemas for `Drill` and `DrillElement`   | 1     | Validation + schema export           |
-| Rink anchor catalog and resolver             | 2     | Anchor positions + snap-to-anchor    |
-| Tool surface as Server Actions (typed)       | 1–2   | AI and editor both call the same API |
-| Schema export endpoint                       | 2     | AI discoverability                   |
-| `DrillPatch` type and applier                | 2     | Undo/redo already needs this shape   |
-| Public schema docs                           | 4     | Marketing surface for agent builders |
+| Foundation                                          | Phase | Why                                                          |
+| --------------------------------------------------- | ----- | ------------------------------------------------------------ |
+| Zod schemas for `Drill` and `DrillElement`          | 1     | Validation + schema export                                   |
+| Rink anchor catalog and resolver                    | 1     | Anchor positions also power editor snap-to-anchor            |
+| Tool surface as typed client functions              | 1     | AI and editor call the same functions (client-side, local)   |
+| `DrillPatch` type and applier                       | 1     | Undo/redo is implemented on top of this shape                |
+| Schema export endpoints `/api/ai/schema/*`          | 1     | AI discoverability; cheap to expose from the Next.js app     |
+| Tool surface as Server Actions (server-side mirror) | 2     | Cloud-backed product needs the same tools on the server      |
+| Public schema docs page                             | 4     | Marketing surface for agent builders                         |
 
-If those exist by end of Phase 4, Phase 5 is largely about UX and provider plumbing — not new architecture.
+If those exist by end of Phase 4, Phase 5 is mostly UX and provider plumbing — not new architecture.
 
 ---
 

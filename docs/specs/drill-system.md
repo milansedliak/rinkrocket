@@ -323,7 +323,7 @@ PDF export is **post-MVP**.
 - Web: SVG-based renderer in `apps/web`.
 - The renderer takes `CanvasState`, `rinkView`, and a target size, and produces output deterministically.
 - Player colors, path stroke styles, and zone fills come from design tokens in `packages/ui` (when extracted) so the model stays presentation-agnostic.
-- Canvas tech decision (plain SVG vs `react-konva` vs Skia) is tracked in `docs/decisions.md` and resolved in Phase 0.
+- Canvas tech: plain SVG by default (see ADR-013 in `docs/decisions.md`). Swappable behind a renderer interface if Phase 2 perf benchmarks demand it.
 
 ---
 

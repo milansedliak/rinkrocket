@@ -8,7 +8,7 @@ Target duration: 2–3 weeks
 
 Take the working product from coaches-on-beta to **public launch-ready**. This phase is about reliability, observability, and getting the first real users in the door.
 
-The product is the canvas (Phase 2) and the practice/sharing wrapper (Phase 3). This phase doesn't add new user features. It adds the operational scaffolding to launch responsibly.
+The product is the canvas (Phase 1), the auth/cloud/sharing layer (Phase 2), and the practice planner (Phase 3). This phase doesn't add new user features. It adds the operational scaffolding to launch responsibly.
 
 ---
 
@@ -59,7 +59,7 @@ The product is the canvas (Phase 2) and the practice/sharing wrapper (Phase 3). 
 
 ### Launch Mechanics
 
-- [ ] Beta cohort onboarded (Phase 0 coaches + their referrals)
+- [ ] Beta cohort onboarded
 - [ ] Feedback channel set up (Discord, email, or Loops form)
 - [ ] First weekly review of analytics + feedback
 - [ ] Soft launch on hockey coach communities (Reddit, Facebook groups, X)

@@ -1,12 +1,12 @@
-# Phase 3 — Practice and Sharing Polish
+# Phase 3 — Practices and Library Polish
 
 Status: `[ ]` not started
-Depends on: [Phase 2](./2-canvas.md)
+Depends on: [Phase 2](./2-auth-cloud-sharing.md)
 Target duration: 2–3 weeks
 
 ## Goal
 
-Coaches don't share single drills in a vacuum — they share **practice plans**. This phase wraps the canvas in just enough surrounding product to make a practice useful.
+Coaches don't share single drills in a vacuum — they share **practice plans**. This phase wraps the canvas in just enough surrounding product to make a practice useful, and polishes the drill library so a coach with 30 drills can actually find what they need.
 
 This is **not** a full practice planner. Practices in MVP are intentionally simple: an ordered list of drills, nothing more.
 
@@ -38,6 +38,7 @@ This is **not** a full practice planner. Practices in MVP are intentionally simp
 
 ### Practice Sharing
 
+- [ ] Share links also support `resource_type: 'practice'` (schema already in place from Phase 2)
 - [ ] One-click share generates a public link
 - [ ] `/p/[token]` renders the practice read-only:
   - practice header (name, description, duration)
@@ -46,19 +47,14 @@ This is **not** a full practice planner. Practices in MVP are intentionally simp
   - mobile-friendly
   - no login required
 
-### PNG Export
-
-- [ ] Export current drill frame as PNG
-- [ ] Export all drill frames as a single tall PNG (or grid)
-- [ ] Export uses the same renderer as the canvas (no separate codepath)
-
-### Drill Library Polish
+### Library Polish
 
 - [ ] Drill list shows thumbnails (rendered + cached in Supabase storage)
 - [ ] Search by name
 - [ ] Filter by tag
-- [ ] Sort by recently edited
+- [ ] Sort by recently edited / alphabetical / created
 - [ ] Bulk delete
+- [ ] Bulk move-to-practice
 
 ---
 
@@ -77,7 +73,7 @@ This is **not** a full practice planner. Practices in MVP are intentionally simp
 
 - [ ] A coach can build a 5-drill practice in under 5 minutes
 - [ ] The shared practice URL renders correctly on phone, tablet, and desktop
-- [ ] PNG export produces a clean image suitable for text/email
-- [ ] At least 3 coaches from Phase 0 build a real practice they would use
+- [ ] At least 3 real coaches build a real practice they would use
+- [ ] Library handles 50+ drills without performance regression
 
 Next: [Phase 4 — Launch](./4-launch.md)

@@ -8,7 +8,7 @@ Target duration: 3–4 weeks
 
 Make RinkRocket the most AI-friendly drill builder on the market. Coaches should be able to **generate**, **modify**, **explain**, and **iterate** on drills via AI — and external AI agents (Cursor, Claude Code, ChatGPT) should be able to do the same through a standard MCP server.
 
-This phase delivers the **AI features**, not the foundations. Foundations (validation, anchors, tool surface, schema export) are built into Phases 1–4 per `ai-interface.md`.
+This phase delivers the **AI features**, not the foundations. Foundations (validation, anchors, tool surface, schema export) are built into Phase 1 per `ai-interface.md`.
 
 ---
 
@@ -16,12 +16,12 @@ This phase delivers the **AI features**, not the foundations. Foundations (valid
 
 Before starting Phase 5, verify the foundations are in place. If any are missing, fix them first:
 
-- [ ] Zod schemas for `Drill`, `Frame`, all `DrillElement` variants
-- [ ] Anchor resolver in `packages/core/src/rink/anchors.ts` with all anchors from `drill-system.md`
-- [ ] Tool surface implemented as Server Actions in `apps/web/server/tools/`
-- [ ] `DrillPatch` type, validator, and applier
-- [ ] Schema export endpoints at `/api/ai/schema/*`
-- [ ] At least one paying or beta user actively using the product
+- [ ] Zod schemas for `Drill`, `Frame`, all `DrillElement` variants (Phase 1)
+- [ ] Anchor resolver in `packages/core/src/rink/anchors.ts` with all anchors from `drill-system.md` (Phase 1)
+- [ ] Tool surface as typed client + server functions (Phases 1 and 2) sharing one TypeScript interface
+- [ ] `DrillPatch` type, validator, and applier (Phase 1)
+- [ ] Schema export endpoints at `/api/ai/schema/*` (Phase 1)
+- [ ] Cloud-backed product with at least one beta cohort actively using it (Phase 4)
 
 If pre-flight fails, the AI work blows up against missing primitives. Don't skip.
 

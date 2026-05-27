@@ -15,13 +15,10 @@ For vision and strategy, see `PROJECT.md`.
 | Canvas UX spec                      | `[draft]`  |
 | AI interface spec                   | `[draft]`  |
 | Drill composer UI design            | `[draft]`  |
-| Coach validation                    | `[ ]`      |
-| Canvas tech spike                   | `[ ]`      |
 | Repo scaffolded                     | `[ ]`      |
-| Backend configured                  | `[ ]`      |
-| Vertical slice working              | `[ ]`      |
-| Canvas MVP                          | `[ ]`      |
-| Practice + sharing polish           | `[ ]`      |
+| Canvas + drill system (local-only)  | `[ ]`      |
+| Auth + cloud + sharing              | `[ ]`      |
+| Practices + library polish          | `[ ]`      |
 | Launch                              | `[ ]`      |
 | AI agents                           | `[ ]`      |
 
@@ -39,8 +36,7 @@ These guide every prioritization decision.
 4. **Web-first in MVP.** Native apps and touch editing come post-MVP.
 5. **Defer abstraction.** Two workspaces day one. Extract more only when a second consumer exists.
 6. **Defer infrastructure.** Sentry, PostHog, Storybook, Turborepo all come in their relevant phase, not on day one.
-7. **Validate before building.** Phase 0 exists for a reason.
-8. **Data model is versioned from day one.** Everything else is recoverable; corrupted user data is not.
+7. **Data model is versioned from day one.** Everything else is recoverable; corrupted user data is not.
 
 ---
 
@@ -48,17 +44,18 @@ These guide every prioritization decision.
 
 Each phase has its own file with scope, tasks, acceptance criteria, and definition of done.
 
-| #   | Phase                                                              | Goal                                                        | Status |
-| --- | ------------------------------------------------------------------ | ----------------------------------------------------------- | ------ |
-| 0   | [Validate and De-risk](./docs/phases/0-validate.md)                | Talk to coaches; prove canvas tech can hit the quality bar  | `[ ]`  |
-| 1   | [Vertical Slice](./docs/phases/1-vertical-slice.md)                | End-to-end flow: login → 1-player drill → save → share link | `[ ]`  |
-| 2   | [Canvas MVP](./docs/phases/2-canvas.md)                            | Best-in-class drill canvas; the phase that wins or loses    | `[ ]`  |
-| 3   | [Practice and Sharing Polish](./docs/phases/3-practice-sharing.md) | Minimal practice planner; PNG export; library polish         | `[ ]`  |
-| 4   | [Launch](./docs/phases/4-launch.md)                                | Reliability, observability, marketing site, beta to public  | `[ ]`  |
-| 5   | [AI Agents](./docs/phases/5-ai-agents.md)                          | MCP server + in-app AI assist; AI as first-class consumer   | `[ ]`  |
-| ∞   | [Later (Post-MVP)](./docs/phases/later.md)                         | Animation, simulation, native apps, teams, marketplace      | n/a    |
+| #   | Phase                                                              | Goal                                                          | Status |
+| --- | ------------------------------------------------------------------ | ------------------------------------------------------------- | ------ |
+| 1   | [Canvas + Drill System](./docs/phases/1-canvas.md)                 | Best-in-class drill canvas. Local-only. No login, no backend. | `[ ]`  |
+| 2   | [Auth, Cloud, Sharing](./docs/phases/2-auth-cloud-sharing.md)      | Email auth, Supabase persistence, share links, local→cloud migration | `[ ]`  |
+| 3   | [Practices and Library Polish](./docs/phases/3-practice-sharing.md) | Minimal practice planner; library search/filter/sort        | `[ ]`  |
+| 4   | [Launch](./docs/phases/4-launch.md)                                | Reliability, observability, marketing site, beta to public    | `[ ]`  |
+| 5   | [AI Agents](./docs/phases/5-ai-agents.md)                          | MCP server + in-app AI assist; AI as first-class consumer     | `[ ]`  |
+| ∞   | [Later (Post-MVP)](./docs/phases/later.md)                         | Animation, simulation, native apps, teams, marketplace        | n/a    |
 
-> **AI-readiness note:** Phase 5 ships AI features, but the foundations (validation, anchors, tool surface, schema export) are built into Phases 1 and 2 so AI features can land quickly post-launch. See `docs/specs/ai-interface.md`.
+> **Phase 1 is the whole product.** It ships locally first — visit the URL, the canvas is there, drills save to the browser. Phase 2 adds the cloud layer on top without disturbing the canvas.
+>
+> **AI-readiness note:** Phase 5 ships AI features, but the foundations (validation, anchors, tool surface, schema export) are built into Phase 1 so AI features can land quickly post-launch. See `docs/specs/ai-interface.md`.
 
 ---
 
@@ -77,13 +74,14 @@ Each phase has its own file with scope, tasks, acceptance criteria, and definiti
 
 ## Definition of "MVP Done"
 
-The MVP is complete when:
+The MVP completes at the end of **Phase 4**, when:
 
 - 5 real coaches each create at least one drill without help
 - Each coach successfully shares a drill link with at least one other person
 - The shared link renders correctly on phone, tablet, and desktop browsers
-- Median time from "new drill" to "shared link" is under 3 minutes
 - The most common feedback is feature requests, not "this doesn't work"
+
+**Phase 1 has its own definition of "done"**: 3 real coaches successfully use the local-only canvas to build multi-frame drills and meet the manual acceptance criteria from `docs/specs/canvas-ux.md`. The canvas must be great before we bolt on the cloud.
 
 See `PROJECT.md` for the canonical version.
 

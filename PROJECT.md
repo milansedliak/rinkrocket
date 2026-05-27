@@ -52,25 +52,39 @@ Once the static drill builder has real users, evolve drills into behavior-driven
 
 ## MVP Scope
 
-The MVP is intentionally narrow. Anything not on this list is post-MVP.
+The MVP is delivered across phases. The **canvas itself ships first**, locally, with no auth and no backend. Everything else wraps that core.
 
-### In scope
-1. Email auth
-2. Drill library (per user)
-3. Drill composer with multi-frame support
-4. Read-only shareable drill links
+### Phase 1 — local canvas (the actual product)
+1. Drill composer with multi-frame support
+2. All MVP elements: player, puck, cone, path, zone, text
+3. Rink coordinate system + anchors
+4. Undo/redo, pan/zoom, snap
+5. Local drill library (IndexedDB)
+6. PNG export
+7. PWA install
+8. Runs without sign-in
 
-### Out of scope (deferred)
-- Practice planner (separate post-MVP phase, see `docs/phases/3-practice-sharing.md`)
+### Phase 2 — cloud + sharing
+9. Email auth (optional; anonymous use stays supported)
+10. Cloud-backed drill library
+11. Read-only shareable drill links
+
+### Phase 3 — practices and polish
+12. Practice planner (ordered list of drills)
+13. Shareable practice links
+14. Library search / filter / sort
+
+### Out of scope (deferred post-MVP)
 - PDF export (PNG only in MVP)
 - Native mobile/tablet apps (web + PWA covers mobile in MVP)
 - Teams, roles, invites
 - Real-time collaboration
 - Animation, playback, simulation
-- AI-generated drills
 - Public drill discovery
 - Marketplace
 - Player and parent training hub
+
+AI features (Phase 5) ship after MVP launches. The AI-readiness foundations are built into Phase 1.
 
 ## Platform Strategy
 
@@ -111,14 +125,32 @@ Additional packages (`packages/ui`, `packages/api`, `packages/canvas`) are added
 - Canvas quality bar is non-negotiable (see `docs/specs/canvas-ux.md`)
 - Web-only in MVP; native apps come later
 
-## Success Criteria for MVP
+## Success Criteria
 
-The MVP is "done" when:
+### Phase 1 done (canvas only)
+- 3 real coaches successfully use the local-only canvas
+- Each builds a multi-frame drill that survives a browser restart
+- Each meets the manual acceptance criteria from `docs/specs/canvas-ux.md`
+
+### MVP done (Phase 4 launch)
 - 5 real coaches each create at least one drill without help
 - Each coach successfully shares a drill link with at least one other person
 - The shared link renders correctly on phone, tablet, and desktop browsers
-- Median time from "new drill" to "shared link" is under 3 minutes
 - The most common feedback is feature requests, not "this doesn't work"
+
+## First Milestone — The Canvas
+
+The first thing we ship is the canvas itself. No login. No backend. No accounts.
+
+A coach visits the URL and immediately:
+
+1. Sees a clean rink and a tool palette
+2. Places players, pucks, and a path in seconds
+3. Adds and duplicates frames
+4. Exports a PNG
+5. Closes the tab and comes back tomorrow — the drill is still there
+
+That is Phase 1 done. Everything else — sign-in, cloud sync, shareable links, practice planner — wraps this core in later phases and **does not change the canvas**.
 
 ## References
 
