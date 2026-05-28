@@ -32,9 +32,12 @@ export type FrameTemplate = {
   /** World-space height in feet. */
   height: number;
   /**
-   * Corner radius as a fraction of `min(width, height)` (0 = square).
-   * Stored as a ratio so it scales proportionally on resize — a "rink" stays
-   * looking like a rink at any size. NHL spec: 28 ft on an 85 ft rink width.
+   * Corner radius as a fraction of the frame's `height` — the 85-ft across
+   * (end-board) dimension on every rink template (0 = square). NHL spec: a
+   * 200 × 85 ft rink has a 28 ft corner radius, so the ratio is 28/85 and the
+   * real radius is `height * 28/85`. Because resizing locks the aspect ratio,
+   * this scales proportionally and a rink stays looking like a rink at any
+   * size — independent of how deep (width) the frame is.
    */
   cornerRadiusRatio: number;
   /**
@@ -49,14 +52,24 @@ export type PlacedFrame = {
   id: string;
   kind: FrameKind;
   label: string;
-  /** Top-left corner in world coordinates. */
+  /**
+   * Top-left of the frame's *unrotated* bounding box in world coordinates.
+   * Rotation (when non-zero) is applied at render time around the bbox center,
+   * so this anchor is unaffected by rotation — translating it moves the
+   * (rotated) frame as a whole.
+   */
   position: { x: number; y: number };
   width: number;
   height: number;
-  /** Ratio of `min(width, height)`; same semantics as on the template. */
+  /** Ratio of `height` (28/85 for rinks); same semantics as on the template. */
   cornerRadiusRatio: number;
   /** Same semantics as on the template. Copied at placement time. */
   roundedCorners: ReadonlyArray<FrameCorner>;
+  /**
+   * Rotation in degrees (clockwise, SVG convention) applied around the
+   * bounding-box center.
+   */
+  rotation: number;
 };
 
 // All hockey-rink-shaped frames share the same NHL board curvature.
@@ -114,13 +127,20 @@ export const FRAME_TEMPLATES: readonly FrameTemplate[] = [
   },
 ];
 
-/** Actual corner radius (in world feet) for a frame at its current size. */
+/**
+ * Actual corner radius (in world feet) for a frame at its current size.
+ *
+ * Derived from the NHL relationship: a 200 × 85 ft rink has a 28 ft corner
+ * radius, i.e. radius = (28/85) × the 85-ft across dimension. That across
+ * dimension is the frame's `height` on every template, so the radius scales
+ * with `height` and stays correct for any size or zone depth (width).
+ */
 export function frameCornerRadius(frame: {
   width: number;
   height: number;
   cornerRadiusRatio: number;
 }): number {
-  return Math.min(frame.width, frame.height) * frame.cornerRadiusRatio;
+  return frame.height * frame.cornerRadiusRatio;
 }
 
 /** Custom MIME so unrelated drag content (text, files) doesn't trigger a drop. */
@@ -131,73 +151,121 @@ export const MIN_FRAME_SIZE = 20;
 
 export type ResizeHandle = "tl" | "tr" | "br" | "bl";
 
+/** Center of the frame's bounding box in world coordinates. */
+export function frameCenter(frame: {
+  position: { x: number; y: number };
+  width: number;
+  height: number;
+}): { x: number; y: number } {
+  return {
+    x: frame.position.x + frame.width / 2,
+    y: frame.position.y + frame.height / 2,
+  };
+}
+
 /**
- * Apply a resize delta (in world coords) to a frame's bounding box. The handle
- * indicates which corner is being dragged; the opposite corner stays fixed.
- * Clamps to `min` so the frame can't be inverted or made smaller than the min.
+ * Rotate a 2D vector by `radians`, clockwise in SVG screen space (Y-down).
+ * Matches the orientation of `<g transform="rotate(deg)">`.
+ */
+export function rotateVec(
+  v: { x: number; y: number },
+  radians: number,
+): { x: number; y: number } {
+  const c = Math.cos(radians);
+  const s = Math.sin(radians);
+  return { x: v.x * c - v.y * s, y: v.x * s + v.y * c };
+}
+
+// Each resize handle's diagonally opposite corner expressed as the local-space
+// offset (relative to the bbox center) of the FIXED corner that should stay
+// pinned in world space during the resize.
+const FIXED_CORNER_SIGN: Record<ResizeHandle, { sx: -1 | 1; sy: -1 | 1 }> = {
+  br: { sx: -1, sy: -1 }, // tl is fixed
+  tr: { sx: -1, sy: 1 }, // bl is fixed
+  tl: { sx: 1, sy: 1 }, // br is fixed
+  bl: { sx: 1, sy: -1 }, // tr is fixed
+};
+
+// Sign that converts the (fixed-corner → dragged-corner) world vector
+// rotated back into local space into positive (w, h). Same magnitude as
+// FIXED_CORNER_SIGN but inverted, since dragged is opposite to fixed.
+const DRAG_SIGN: Record<ResizeHandle, { sw: -1 | 1; sh: -1 | 1 }> = {
+  br: { sw: 1, sh: 1 },
+  tr: { sw: 1, sh: -1 },
+  tl: { sw: -1, sh: -1 },
+  bl: { sw: -1, sh: 1 },
+};
+
+/**
+ * Resize a (possibly rotated) frame so the diagonally-opposite corner stays
+ * fixed in world space and the rotation is preserved. The dragged corner
+ * follows `cursorWorld`.
+ *
+ * The frame's aspect ratio is LOCKED to its initial ratio so the rink keeps
+ * its proportions — circles, lines, and faceoff dots scale uniformly and never
+ * distort. The cursor drives the dominant axis (whichever scale is larger), so
+ * the corner still tracks the pointer naturally. Clamped to `min` (no flip).
  */
 export function applyFrameResize(
   initial: {
     position: { x: number; y: number };
     width: number;
     height: number;
+    rotation: number;
   },
   handle: ResizeHandle,
-  delta: { x: number; y: number },
+  cursorWorld: { x: number; y: number },
   min = MIN_FRAME_SIZE,
 ): { position: { x: number; y: number }; width: number; height: number } {
-  const right0 = initial.position.x + initial.width;
-  const bottom0 = initial.position.y + initial.height;
+  const theta = (initial.rotation * Math.PI) / 180;
+  const c0 = frameCenter(initial);
 
-  let x = initial.position.x;
-  let y = initial.position.y;
-  let w = initial.width;
-  let h = initial.height;
+  const fix = FIXED_CORNER_SIGN[handle];
+  const fixedRel = {
+    x: fix.sx * (initial.width / 2),
+    y: fix.sy * (initial.height / 2),
+  };
+  const fixedRelRotated = rotateVec(fixedRel, theta);
+  const fixedWorld = {
+    x: c0.x + fixedRelRotated.x,
+    y: c0.y + fixedRelRotated.y,
+  };
 
-  switch (handle) {
-    case "tl":
-      x = initial.position.x + delta.x;
-      y = initial.position.y + delta.y;
-      w = initial.width - delta.x;
-      h = initial.height - delta.y;
-      if (w < min) {
-        x = right0 - min;
-        w = min;
-      }
-      if (h < min) {
-        y = bottom0 - min;
-        h = min;
-      }
-      break;
-    case "tr":
-      y = initial.position.y + delta.y;
-      w = initial.width + delta.x;
-      h = initial.height - delta.y;
-      if (w < min) w = min;
-      if (h < min) {
-        y = bottom0 - min;
-        h = min;
-      }
-      break;
-    case "br":
-      w = initial.width + delta.x;
-      h = initial.height + delta.y;
-      if (w < min) w = min;
-      if (h < min) h = min;
-      break;
-    case "bl":
-      x = initial.position.x + delta.x;
-      w = initial.width - delta.x;
-      h = initial.height + delta.y;
-      if (w < min) {
-        x = right0 - min;
-        w = min;
-      }
-      if (h < min) h = min;
-      break;
-  }
+  // Diagonal vector from fixed corner to cursor, expressed in local (unrotated)
+  // frame space.
+  const diagWorld = {
+    x: cursorWorld.x - fixedWorld.x,
+    y: cursorWorld.y - fixedWorld.y,
+  };
+  const diagLocal = rotateVec(diagWorld, -theta);
 
-  return { position: { x, y }, width: w, height: h };
+  const sgn = DRAG_SIGN[handle];
+  const rawW = sgn.sw * diagLocal.x;
+  const rawH = sgn.sh * diagLocal.y;
+
+  // Lock to the initial aspect ratio: scale uniformly, following whichever
+  // axis the cursor pushed further.
+  let scale = Math.max(rawW / initial.width, rawH / initial.height);
+  const minScale = Math.max(min / initial.width, min / initial.height);
+  if (!(scale >= minScale)) scale = minScale; // also catches NaN / negatives
+
+  const w = initial.width * scale;
+  const h = initial.height * scale;
+
+  // New center: place the fixed corner back at its world position, accounting
+  // for the new dimensions.
+  const newFixedRel = { x: fix.sx * (w / 2), y: fix.sy * (h / 2) };
+  const newFixedRelRotated = rotateVec(newFixedRel, theta);
+  const newCenter = {
+    x: fixedWorld.x - newFixedRelRotated.x,
+    y: fixedWorld.y - newFixedRelRotated.y,
+  };
+
+  return {
+    position: { x: newCenter.x - w / 2, y: newCenter.y - h / 2 },
+    width: w,
+    height: h,
+  };
 }
 
 const VALID_KINDS: ReadonlySet<string> = new Set(
@@ -235,7 +303,14 @@ export function placeFrameFromTemplate(
     height: template.height,
     cornerRadiusRatio: template.cornerRadiusRatio,
     roundedCorners: template.roundedCorners,
+    rotation: 0,
   };
+}
+
+/** Normalize a rotation in degrees to (-180, 180]. */
+export function normalizeRotation(deg: number): number {
+  const r = ((deg + 180) % 360 + 360) % 360 - 180;
+  return r === -180 ? 180 : r;
 }
 
 /**

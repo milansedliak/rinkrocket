@@ -14,6 +14,7 @@ import {
   applyFrameResize,
   FRAME_DRAG_MIME,
   isFrameKind,
+  normalizeRotation,
   type FrameKind,
   type PlacedFrame,
   type ResizeHandle,
@@ -56,22 +57,34 @@ const isResizeHandle = (v: string): v is ResizeHandle =>
 
 const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
 
+// Rotation snaps to 45° by default; hold Shift while dragging to bypass.
+const ROTATE_SNAP_DEG = 45;
+const ROTATE_KEY_STEP_DEG = 45; // R / Shift+R nudge step
+// Ctrl-drag rotation: vertical mouse motion scrubs the angle. 1 px = 1°.
+// Down (positive ΔY) = clockwise (positive degrees, SVG convention).
+const ROTATE_DEG_PER_PIXEL = 1;
+
 /**
  * Infinite 2D canvas with grid, wheel/keyboard zoom, spacebar-drag pan, and
  * drag-and-drop of frame templates from the sidebar. Placed frames are
- * selectable, movable, and resizable.
+ * selectable, movable, resizable, and rotatable.
  *
  * Interaction priority on pointer-down:
- *   1. Space held or middle mouse  → pan
- *   2. Hit a resize handle         → start resize
- *   3. Hit a frame body            → select + start move
- *   4. Empty background            → deselect (if anything was selected)
+ *   1. Space held or middle mouse              → pan
+ *   2. Hit a resize handle with Ctrl/Cmd held  → rotate (vertical scrubber)
+ *   3. Hit a resize handle                     → resize
+ *   4. Hit a frame body                        → select + start move
+ *   5. Empty background                        → deselect (if any selected)
  *
  * Keyboard:
  *   - Space + drag        → pan
+ *   - Ctrl/Cmd            → switch resize handles into rotate mode (cursor +
+ *                           hint at corners). Drag down = CW, up = CCW.
  *   - Wheel / pinch       → zoom around cursor
  *   - + / -               → zoom around center
  *   - 0 or F              → reset viewport
+ *   - R / Shift+R         → rotate selected frame ±45°
+ *   - Drag rotate         → snaps to 45°; hold Shift to free-rotate
  *   - Esc                 → deselect
  *   - Backspace / Delete  → delete selected frame
  */
@@ -91,6 +104,7 @@ export function Canvas({
   });
 
   const [spaceHeld, setSpaceHeld] = useState(false);
+  const [ctrlHeld, setCtrlHeld] = useState(false);
   const [panning, setPanning] = useState(false);
   const [interacting, setInteracting] = useState(false); // move or resize active
   const [dragHover, setDragHover] = useState(false);
@@ -102,6 +116,8 @@ export function Canvas({
   sizeRef.current = size;
   const spaceHeldRef = useRef(false);
   spaceHeldRef.current = spaceHeld;
+  const ctrlHeldRef = useRef(false);
+  ctrlHeldRef.current = ctrlHeld;
   const framesRef = useRef(frames);
   framesRef.current = frames;
   const selectedFrameIdRef = useRef(selectedFrameId);
@@ -124,8 +140,21 @@ export function Canvas({
     pointerId: number;
     frameId: string;
     handle: ResizeHandle;
-    startClient: Vec;
-    initial: { position: Vec; width: number; height: number };
+    initial: {
+      position: Vec;
+      width: number;
+      height: number;
+      rotation: number;
+    };
+  } | null>(null);
+
+  const rotateDragRef = useRef<{
+    pointerId: number;
+    frameId: string;
+    /** Pointer Y at drag start (clientY). */
+    startClientY: number;
+    /** Rotation (deg) at the moment the drag started. */
+    startRotationDeg: number;
   } | null>(null);
 
   // SVG resize observation.
@@ -217,6 +246,12 @@ export function Canvas({
         e.preventDefault();
         return;
       }
+      if (e.key === "Control" || e.key === "Meta") {
+        // Don't preventDefault — we want browser shortcuts (copy/paste, etc.)
+        // to keep working when the chord is actually meaningful elsewhere.
+        if (!ctrlHeldRef.current) setCtrlHeld(true);
+        return;
+      }
       if (e.key === "+" || e.key === "=") {
         e.preventDefault();
         const { width, height } = sizeRef.current;
@@ -249,6 +284,22 @@ export function Canvas({
         }
         return;
       }
+      // Plain R / Shift+R only — never swallow Ctrl+R or Cmd+R, those are
+      // the browser's reload shortcut.
+      if ((e.key === "r" || e.key === "R") && !e.ctrlKey && !e.metaKey) {
+        const id = selectedFrameIdRef.current;
+        if (!id) return;
+        const frame = framesRef.current.find((f) => f.id === id);
+        if (!frame) return;
+        e.preventDefault();
+        const dir = e.shiftKey ? -1 : 1;
+        onUpdateFrame(id, {
+          rotation: normalizeRotation(
+            frame.rotation + dir * ROTATE_KEY_STEP_DEG,
+          ),
+        });
+        return;
+      }
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
@@ -258,14 +309,21 @@ export function Canvas({
           panDragRef.current = null;
           setPanning(false);
         }
+        return;
+      }
+      if (e.key === "Control" || e.key === "Meta") {
+        setCtrlHeld(false);
+        return;
       }
     };
 
     const onBlur = () => {
       setSpaceHeld(false);
+      setCtrlHeld(false);
       panDragRef.current = null;
       moveDragRef.current = null;
       resizeDragRef.current = null;
+      rotateDragRef.current = null;
       setPanning(false);
       setInteracting(false);
     };
@@ -278,7 +336,19 @@ export function Canvas({
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
     };
-  }, [zoomAt, resetViewport, onSelectFrame, onDeleteFrame]);
+  }, [zoomAt, resetViewport, onSelectFrame, onDeleteFrame, onUpdateFrame]);
+
+  /** Convert a clientX/Y to world coords using the current viewport. */
+  const clientToWorld = useCallback((clientX: number, clientY: number): Vec => {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    const v = viewportRef.current;
+    const pxPerFt = v.zoom * PX_PER_FT_AT_100;
+    return {
+      x: (clientX - rect.left - v.pan.x) / pxPerFt,
+      y: (clientY - rect.top - v.pan.y) / pxPerFt,
+    };
+  }, []);
 
   const onPointerDown = useCallback(
     (e: PointerEvent<SVGSVGElement>) => {
@@ -295,14 +365,34 @@ export function Canvas({
         return;
       }
 
-      // Only the primary (left) button drives selection/move/resize.
+      // Only the primary (left) button drives selection/move/resize/rotate.
       if (e.button !== 0) return;
 
       const target = e.target as Element | null;
       const frameId = target?.getAttribute("data-frame-id") ?? null;
       const handleAttr = target?.getAttribute("data-handle") ?? null;
 
-      // 2. Resize handle.
+      // 2. Rotate. Ctrl/Cmd promotes any press on the frame (body, label, or
+      //    a handle) into a rotate (vertical scrubber). The modifier is locked
+      //    in for the duration of the drag so releasing mid-drag won't switch
+      //    modes.
+      if (frameId && (e.ctrlKey || e.metaKey)) {
+        const frame = framesRef.current.find((f) => f.id === frameId);
+        if (!frame) return;
+        e.preventDefault();
+        onSelectFrame(frameId);
+        rotateDragRef.current = {
+          pointerId: e.pointerId,
+          frameId,
+          startClientY: e.clientY,
+          startRotationDeg: frame.rotation,
+        };
+        setInteracting(true);
+        e.currentTarget.setPointerCapture(e.pointerId);
+        return;
+      }
+
+      // 3. Resize handle.
       if (frameId && handleAttr && isResizeHandle(handleAttr)) {
         const frame = framesRef.current.find((f) => f.id === frameId);
         if (!frame) return;
@@ -312,11 +402,11 @@ export function Canvas({
           pointerId: e.pointerId,
           frameId,
           handle: handleAttr,
-          startClient: { x: e.clientX, y: e.clientY },
           initial: {
             position: { ...frame.position },
             width: frame.width,
             height: frame.height,
+            rotation: frame.rotation,
           },
         };
         setInteracting(true);
@@ -324,7 +414,7 @@ export function Canvas({
         return;
       }
 
-      // 3. Frame body / label.
+      // 4. Frame body / label.
       if (frameId) {
         const frame = framesRef.current.find((f) => f.id === frameId);
         if (!frame) return;
@@ -341,12 +431,12 @@ export function Canvas({
         return;
       }
 
-      // 4. Background — deselect.
+      // 5. Background — deselect.
       if (selectedFrameIdRef.current !== null) {
         onSelectFrame(null);
       }
     },
-    [onSelectFrame],
+    [onSelectFrame, clientToWorld],
   );
 
   const onPointerMove = useCallback(
@@ -379,12 +469,12 @@ export function Canvas({
 
       const resizeDrag = resizeDragRef.current;
       if (resizeDrag && e.pointerId === resizeDrag.pointerId) {
-        const dxw = (e.clientX - resizeDrag.startClient.x) / pxPerFt;
-        const dyw = (e.clientY - resizeDrag.startClient.y) / pxPerFt;
-        const next = applyFrameResize(resizeDrag.initial, resizeDrag.handle, {
-          x: dxw,
-          y: dyw,
-        });
+        const cursorWorld = clientToWorld(e.clientX, e.clientY);
+        const next = applyFrameResize(
+          resizeDrag.initial,
+          resizeDrag.handle,
+          cursorWorld,
+        );
         onUpdateFrame(resizeDrag.frameId, {
           position: next.position,
           width: next.width,
@@ -392,8 +482,23 @@ export function Canvas({
         });
         return;
       }
+
+      const rotateDrag = rotateDragRef.current;
+      if (rotateDrag && e.pointerId === rotateDrag.pointerId) {
+        const dy = e.clientY - rotateDrag.startClientY;
+        let nextDeg =
+          rotateDrag.startRotationDeg + dy * ROTATE_DEG_PER_PIXEL;
+        // Snap to 45° by default; hold Shift to free-rotate.
+        if (!e.shiftKey) {
+          nextDeg = Math.round(nextDeg / ROTATE_SNAP_DEG) * ROTATE_SNAP_DEG;
+        }
+        onUpdateFrame(rotateDrag.frameId, {
+          rotation: normalizeRotation(nextDeg),
+        });
+        return;
+      }
     },
-    [onUpdateFrame],
+    [onUpdateFrame, clientToWorld],
   );
 
   const endPointer = useCallback((e: PointerEvent<SVGSVGElement>) => {
@@ -415,8 +520,17 @@ export function Canvas({
       resizeDragRef.current = null;
       released = true;
     }
+    const rotateDrag = rotateDragRef.current;
+    if (rotateDrag && e.pointerId === rotateDrag.pointerId) {
+      rotateDragRef.current = null;
+      released = true;
+    }
 
-    if (!moveDragRef.current && !resizeDragRef.current) {
+    if (
+      !moveDragRef.current &&
+      !resizeDragRef.current &&
+      !rotateDragRef.current
+    ) {
       setInteracting(false);
     }
 
@@ -593,6 +707,7 @@ export function Canvas({
               pxPerFt={pxPerFt}
               selected={frame.id === selectedFrameId}
               spaceHeld={spaceHeld}
+              ctrlHeld={ctrlHeld}
             />
           ))}
         </g>
@@ -621,6 +736,8 @@ export function Canvas({
           <kbd className="font-sans">space</kbd> + drag · pan &nbsp;·&nbsp;{" "}
           <kbd className="font-sans">wheel</kbd> · zoom &nbsp;·&nbsp;{" "}
           <kbd className="font-sans">0</kbd> · reset &nbsp;·&nbsp;{" "}
+          <kbd className="font-sans">⌃</kbd> + drag corner · rotate &nbsp;·&nbsp;{" "}
+          <kbd className="font-sans">R</kbd> · 45° &nbsp;·&nbsp;{" "}
           <kbd className="font-sans">⌫</kbd> · delete
         </div>
       </div>
