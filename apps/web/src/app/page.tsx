@@ -1,9 +1,9 @@
-import { Canvas } from "@/components/canvas/canvas";
+import { Editor } from "@/components/editor/editor";
 
 export default function Home() {
   return (
     <main className="h-screen w-screen">
-      <Canvas />
+      <Editor />
     </main>
   );
 }
