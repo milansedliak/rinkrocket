@@ -1,0 +1,16 @@
+{
+  "name": "rinkrocket",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "dev": "pnpm --filter @rinkrocket/web dev",
+    "build": "pnpm --filter @rinkrocket/web build",
+    "start": "pnpm --filter @rinkrocket/web start",
+    "lint": "pnpm -r --parallel run lint",
+    "typecheck": "pnpm -r --parallel run typecheck"
+  },
+  "packageManager": "pnpm@10.15.1",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
