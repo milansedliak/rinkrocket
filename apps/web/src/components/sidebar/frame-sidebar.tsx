@@ -1,13 +1,15 @@
+"use client";
+
 import {
   FRAME_TEMPLATES,
   PATH_TOOLS,
   type DrawToolId,
   type PlayerTeam,
 } from "@/lib/frame";
+import { MovementToolButton, SelectToolButton } from "@/components/sidebar/movement-tools";
 
 import { FrameCard } from "./frame-card";
 import { PlayerCard } from "./player-card";
-import { MovementToolButton, SelectToolButton } from "./movement-tools";
 
 const PLAYER_TEAMS: PlayerTeam[] = ["team-a", "team-b"];
 
