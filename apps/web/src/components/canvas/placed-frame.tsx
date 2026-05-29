@@ -12,6 +12,21 @@ import { RinkMarkings } from "./rink-markings";
 const SELECTION_COLOR = "rgb(14, 165, 233)"; // sky-500
 
 /**
+ * Marks an element as a "move handle" for the frame. Only the name label and
+ * the border edge carry this — the interior does NOT, so dragging inside the
+ * frame (e.g. to place/select objects on the ice) never moves the whole frame
+ * by accident. The Canvas reads `data-frame-move` at pointerdown.
+ */
+export const FRAME_MOVE_ATTR = "frame-move";
+
+/**
+ * Marks the invisible rotate zone just outside each corner (Figma-style). The
+ * Canvas reads `data-rotate-corner` at pointerdown to start an angle-based
+ * rotate around the frame's center.
+ */
+export const ROTATE_CORNER_ATTR = "frame-rotate-corner";
+
+/**
  * Rotation cursor: a Lucide-style rotate-cw glyph with a white halo so it
  * reads against any background. Hotspot at (12, 12). Falls back to `grab` on
  * platforms that reject SVG cursors.
@@ -33,15 +48,13 @@ const HANDLES: ReadonlyArray<{
 
 /**
  * Renders a placed frame in world coordinates with selection affordances:
- * dashed outline plus four corner resize handles. Rotation piggy-backs on the
- * same handles via the Ctrl/Cmd modifier — when `ctrlHeld` is true the
- * handle's cursor swaps to a rotate glyph and a curved-arrow hint fades in
- * at every corner. The Canvas owns the modifier state and inspects
- * `e.ctrlKey || e.metaKey` at pointerdown to decide between resize and
- * rotate drags.
+ * a dashed outline, four corner resize handles, and an invisible rotate zone
+ * just outside each corner (Figma-style). The Canvas dispatches interactions
+ * from `data-frame-id` / `data-handle` / `data-rotate-corner` / `data-frame-move`
+ * on the event target.
  *
- * `pxPerFt` is the world→screen scale; visual elements (strokes, labels,
- * handles, hint) are divided by it so they stay screen-constant under zoom.
+ * `pxPerFt` is the world→screen scale; visual elements (strokes, label, handles)
+ * are divided by it so they stay screen-constant under zoom.
  *
  * Rotation is applied by an outer <g rotate(deg cx cy)> so the body, label,
  * outline, and all handles rotate as one — child math stays in unrotated
@@ -52,31 +65,28 @@ export function PlacedFrameView({
   pxPerFt,
   selected,
   spaceHeld,
-  ctrlHeld,
 }: {
   frame: PlacedFrame;
   pxPerFt: number;
   selected: boolean;
   spaceHeld: boolean;
-  /** True while Ctrl/Cmd is held — switches resize handles to rotate mode. */
-  ctrlHeld: boolean;
 }) {
   const stroke = 2 / pxPerFt;
-  const labelSize = 12 / pxPerFt;
-  const labelPad = 6 / pxPerFt;
+  // Figma-style frame title: a fixed on-screen size (~11px) regardless of zoom
+  // or frame size. Because this <g> is rendered inside the world group (scaled
+  // by pxPerFt), dividing by pxPerFt yields a constant screen-space size.
+  const labelSize = 11 / pxPerFt;
+  const labelGap = 7 / pxPerFt; // gap above the frame's top edge
   const selStroke = 1.5 / pxPerFt;
   const dashOn = 4 / pxPerFt;
   const dashOff = 3 / pxPerFt;
   const handleR = 5 / pxPerFt;
   const handleStroke = 1.5 / pxPerFt;
+  const borderHit = 10 / pxPerFt; // grab band centered on the outline
+  const rotateZoneR = 16 / pxPerFt; // rotate ring radius outside each corner
 
-  const bodyCursor = spaceHeld
-    ? undefined
-    : selected && ctrlHeld
-      ? ROTATE_CURSOR
-      : selected
-        ? "move"
-        : "pointer";
+  const interiorCursor = spaceHeld ? undefined : "pointer";
+  const moveCursor = spaceHeld ? undefined : "move";
   const radius = frameCornerRadius(frame);
   const framePath = buildFramePath(
     frame.position.x,
@@ -102,19 +112,35 @@ export function PlacedFrameView({
         stroke="rgba(15, 23, 42, 0.85)"
         strokeWidth={stroke}
         shapeRendering="geometricPrecision"
-        style={{ cursor: bodyCursor }}
+        style={{ cursor: interiorCursor }}
       />
 
       <RinkMarkings frame={frame} pxPerFt={pxPerFt} framePath={framePath} />
 
+      {/* Border grab band: a thick, transparent stroke along the outline that
+          is the only part of the frame body you can drag to move it. Interior
+          clicks fall through to the fill path above (select only). */}
+      <path
+        data-frame-id={frame.id}
+        data-frame-move={FRAME_MOVE_ATTR}
+        d={framePath}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={borderHit}
+        pointerEvents="stroke"
+        style={{ cursor: moveCursor }}
+      />
+
       <text
         data-frame-id={frame.id}
-        x={frame.position.x + labelPad}
-        y={frame.position.y - labelPad}
+        data-frame-move={FRAME_MOVE_ATTR}
+        x={frame.position.x}
+        y={frame.position.y - labelGap}
         fontSize={labelSize}
         fill={selected ? SELECTION_COLOR : "rgba(15, 23, 42, 0.65)"}
         fontWeight={500}
-        style={{ cursor: bodyCursor, userSelect: "none" }}
+        fontFamily="ui-sans-serif, system-ui, sans-serif"
+        style={{ cursor: moveCursor, userSelect: "none" }}
       >
         {frame.label}
       </text>
@@ -134,98 +160,37 @@ export function PlacedFrameView({
             const cx = frame.position.x + h.fx * frame.width;
             const cy = frame.position.y + h.fy * frame.height;
             return (
-              <circle
-                key={h.id}
-                data-frame-id={frame.id}
-                data-handle={h.id}
-                cx={cx}
-                cy={cy}
-                r={handleR}
-                fill="#ffffff"
-                stroke={SELECTION_COLOR}
-                strokeWidth={handleStroke}
-                style={{
-                  cursor: spaceHeld
-                    ? undefined
-                    : ctrlHeld
-                      ? ROTATE_CURSOR
-                      : h.cursor,
-                }}
-              />
+              <g key={h.id}>
+                {/* Rotate zone — transparent disc just outside/around the
+                    corner. Rendered before the resize handle so the handle
+                    (resize) wins when the cursor is directly on it, while the
+                    surrounding ring rotates (Figma behavior). */}
+                <circle
+                  data-frame-id={frame.id}
+                  data-rotate-corner={ROTATE_CORNER_ATTR}
+                  cx={cx}
+                  cy={cy}
+                  r={rotateZoneR}
+                  fill="transparent"
+                  pointerEvents="all"
+                  style={{ cursor: spaceHeld ? undefined : ROTATE_CURSOR }}
+                />
+                <circle
+                  data-frame-id={frame.id}
+                  data-handle={h.id}
+                  cx={cx}
+                  cy={cy}
+                  r={handleR}
+                  fill="#ffffff"
+                  stroke={SELECTION_COLOR}
+                  strokeWidth={handleStroke}
+                  style={{ cursor: spaceHeld ? undefined : h.cursor }}
+                />
+              </g>
             );
           })}
-
-          {/* Single rotation indicator in the middle of the frame while Ctrl
-              is held, signalling that the corner handles will rotate. */}
-          {ctrlHeld && !spaceHeld && (
-            <RotationHint
-              cx={frame.position.x + frame.width / 2}
-              cy={frame.position.y + frame.height / 2}
-              pxPerFt={pxPerFt}
-            />
-          )}
         </>
       )}
-    </g>
-  );
-}
-
-/**
- * Curved-arrow rotation glyph centered at (cx, cy). Non-interactive; just
- * communicates that rotation mode is active.
- */
-function RotationHint({
-  cx,
-  cy,
-  pxPerFt,
-}: {
-  cx: number;
-  cy: number;
-  pxPerFt: number;
-}) {
-  const iconScreenPx = 28;
-  const sizeWorld = iconScreenPx / pxPerFt;
-  const tx = cx - sizeWorld / 2;
-  const ty = cy - sizeWorld / 2;
-  const scale = sizeWorld / 24;
-
-  return (
-    <g
-      transform={`translate(${tx} ${ty}) scale(${scale})`}
-      style={{ pointerEvents: "none" }}
-    >
-      <path
-        d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1.06 6.65 2.85L21 8"
-        fill="none"
-        stroke="white"
-        strokeWidth={4}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M21 3v5h-5"
-        fill="none"
-        stroke="white"
-        strokeWidth={4}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1.06 6.65 2.85L21 8"
-        fill="none"
-        stroke={SELECTION_COLOR}
-        strokeWidth={2.25}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M21 3v5h-5"
-        fill="none"
-        stroke={SELECTION_COLOR}
-        strokeWidth={2.25}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
     </g>
   );
 }

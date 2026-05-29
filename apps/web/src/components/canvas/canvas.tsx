@@ -9,9 +9,10 @@ import {
   type PointerEvent,
 } from "react";
 
-import { PlacedFrameView } from "./placed-frame";
+import { PlacedFrameView, ROTATE_CORNER_ATTR } from "./placed-frame";
 import {
   applyFrameResize,
+  frameCenter,
   FRAME_DRAG_MIME,
   isFrameKind,
   normalizeRotation,
@@ -57,12 +58,11 @@ const isResizeHandle = (v: string): v is ResizeHandle =>
 
 const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
 
-// Rotation snaps to 45° by default; hold Shift while dragging to bypass.
-const ROTATE_SNAP_DEG = 45;
-const ROTATE_KEY_STEP_DEG = 45; // R / Shift+R nudge step
-// Ctrl-drag rotation: vertical mouse motion scrubs the angle. 1 px = 1°.
-// Down (positive ΔY) = clockwise (positive degrees, SVG convention).
-const ROTATE_DEG_PER_PIXEL = 1;
+// Figma-style rotation: free-rotate by default; hold Shift to snap.
+const ROTATE_SNAP_DEG = 15;
+const ROTATE_KEY_STEP_DEG = 15; // R / Shift+R nudge step
+
+const radToDeg = (r: number) => (r * 180) / Math.PI;
 
 /**
  * Infinite 2D canvas with grid, wheel/keyboard zoom, spacebar-drag pan, and
@@ -70,21 +70,20 @@ const ROTATE_DEG_PER_PIXEL = 1;
  * selectable, movable, resizable, and rotatable.
  *
  * Interaction priority on pointer-down:
- *   1. Space held or middle mouse              → pan
- *   2. Hit a resize handle with Ctrl/Cmd held  → rotate (vertical scrubber)
- *   3. Hit a resize handle                     → resize
- *   4. Hit a frame body                        → select + start move
- *   5. Empty background                        → deselect (if any selected)
+ *   1. Space held or middle mouse        → pan
+ *   2. Hit a corner's rotate zone        → rotate around bbox center
+ *   3. Hit a resize handle               → resize
+ *   4. Hit the name label or border edge → select + start move
+ *   5. Hit the frame interior            → select only (no move)
+ *   6. Empty background                  → deselect (if any selected)
  *
  * Keyboard:
  *   - Space + drag        → pan
- *   - Ctrl/Cmd            → switch resize handles into rotate mode (cursor +
- *                           hint at corners). Drag down = CW, up = CCW.
  *   - Wheel / pinch       → zoom around cursor
  *   - + / -               → zoom around center
  *   - 0 or F              → reset viewport
- *   - R / Shift+R         → rotate selected frame ±45°
- *   - Drag rotate         → snaps to 45°; hold Shift to free-rotate
+ *   - R / Shift+R         → rotate selected frame ±15°
+ *   - Drag rotate         → free; hold Shift to snap to 15°
  *   - Esc                 → deselect
  *   - Backspace / Delete  → delete selected frame
  */
@@ -104,7 +103,6 @@ export function Canvas({
   });
 
   const [spaceHeld, setSpaceHeld] = useState(false);
-  const [ctrlHeld, setCtrlHeld] = useState(false);
   const [panning, setPanning] = useState(false);
   const [interacting, setInteracting] = useState(false); // move or resize active
   const [dragHover, setDragHover] = useState(false);
@@ -116,8 +114,6 @@ export function Canvas({
   sizeRef.current = size;
   const spaceHeldRef = useRef(false);
   spaceHeldRef.current = spaceHeld;
-  const ctrlHeldRef = useRef(false);
-  ctrlHeldRef.current = ctrlHeld;
   const framesRef = useRef(frames);
   framesRef.current = frames;
   const selectedFrameIdRef = useRef(selectedFrameId);
@@ -151,8 +147,10 @@ export function Canvas({
   const rotateDragRef = useRef<{
     pointerId: number;
     frameId: string;
-    /** Pointer Y at drag start (clientY). */
-    startClientY: number;
+    /** Frame's bbox center in world coords (pivot, fixed during drag). */
+    centerWorld: Vec;
+    /** atan2 of (initial cursor − center), radians. */
+    startAngleRad: number;
     /** Rotation (deg) at the moment the drag started. */
     startRotationDeg: number;
   } | null>(null);
@@ -246,12 +244,6 @@ export function Canvas({
         e.preventDefault();
         return;
       }
-      if (e.key === "Control" || e.key === "Meta") {
-        // Don't preventDefault — we want browser shortcuts (copy/paste, etc.)
-        // to keep working when the chord is actually meaningful elsewhere.
-        if (!ctrlHeldRef.current) setCtrlHeld(true);
-        return;
-      }
       if (e.key === "+" || e.key === "=") {
         e.preventDefault();
         const { width, height } = sizeRef.current;
@@ -311,15 +303,10 @@ export function Canvas({
         }
         return;
       }
-      if (e.key === "Control" || e.key === "Meta") {
-        setCtrlHeld(false);
-        return;
-      }
     };
 
     const onBlur = () => {
       setSpaceHeld(false);
-      setCtrlHeld(false);
       panDragRef.current = null;
       moveDragRef.current = null;
       resizeDragRef.current = null;
@@ -371,20 +358,25 @@ export function Canvas({
       const target = e.target as Element | null;
       const frameId = target?.getAttribute("data-frame-id") ?? null;
       const handleAttr = target?.getAttribute("data-handle") ?? null;
+      const moveAttr = target?.getAttribute("data-frame-move") ?? null;
+      const rotateAttr = target?.getAttribute("data-rotate-corner") ?? null;
 
-      // 2. Rotate. Ctrl/Cmd promotes any press on the frame (body, label, or
-      //    a handle) into a rotate (vertical scrubber). The modifier is locked
-      //    in for the duration of the drag so releasing mid-drag won't switch
-      //    modes.
-      if (frameId && (e.ctrlKey || e.metaKey)) {
+      // 2. Rotate. Grabbing a corner's rotate zone (just outside the resize
+      //    handle) starts an angle-based rotation around the frame's bbox
+      //    center, following the cursor like Figma. Free by default; Shift
+      //    snaps to 15° (handled in pointermove).
+      if (frameId && rotateAttr === ROTATE_CORNER_ATTR) {
         const frame = framesRef.current.find((f) => f.id === frameId);
         if (!frame) return;
         e.preventDefault();
         onSelectFrame(frameId);
+        const center = frameCenter(frame);
+        const cursor = clientToWorld(e.clientX, e.clientY);
         rotateDragRef.current = {
           pointerId: e.pointerId,
           frameId,
-          startClientY: e.clientY,
+          centerWorld: center,
+          startAngleRad: Math.atan2(cursor.y - center.y, cursor.x - center.x),
           startRotationDeg: frame.rotation,
         };
         setInteracting(true);
@@ -414,8 +406,10 @@ export function Canvas({
         return;
       }
 
-      // 4. Frame body / label.
-      if (frameId) {
+      // 4. Move handle (name label or border edge only). The interior is NOT
+      //    a move handle, so dragging inside the frame won't drag the whole
+      //    thing once it holds objects.
+      if (frameId && moveAttr) {
         const frame = framesRef.current.find((f) => f.id === frameId);
         if (!frame) return;
         e.preventDefault();
@@ -431,7 +425,14 @@ export function Canvas({
         return;
       }
 
-      // 5. Background — deselect.
+      // 5. Frame interior — select only (no move).
+      if (frameId) {
+        e.preventDefault();
+        onSelectFrame(frameId);
+        return;
+      }
+
+      // 6. Background — deselect.
       if (selectedFrameIdRef.current !== null) {
         onSelectFrame(null);
       }
@@ -485,11 +486,15 @@ export function Canvas({
 
       const rotateDrag = rotateDragRef.current;
       if (rotateDrag && e.pointerId === rotateDrag.pointerId) {
-        const dy = e.clientY - rotateDrag.startClientY;
-        let nextDeg =
-          rotateDrag.startRotationDeg + dy * ROTATE_DEG_PER_PIXEL;
-        // Snap to 45° by default; hold Shift to free-rotate.
-        if (!e.shiftKey) {
+        const cursor = clientToWorld(e.clientX, e.clientY);
+        const angle = Math.atan2(
+          cursor.y - rotateDrag.centerWorld.y,
+          cursor.x - rotateDrag.centerWorld.x,
+        );
+        const deltaDeg = radToDeg(angle - rotateDrag.startAngleRad);
+        let nextDeg = rotateDrag.startRotationDeg + deltaDeg;
+        // Free-rotate by default; hold Shift to snap to 15° (Figma).
+        if (e.shiftKey) {
           nextDeg = Math.round(nextDeg / ROTATE_SNAP_DEG) * ROTATE_SNAP_DEG;
         }
         onUpdateFrame(rotateDrag.frameId, {
@@ -707,7 +712,6 @@ export function Canvas({
               pxPerFt={pxPerFt}
               selected={frame.id === selectedFrameId}
               spaceHeld={spaceHeld}
-              ctrlHeld={ctrlHeld}
             />
           ))}
         </g>
@@ -736,8 +740,8 @@ export function Canvas({
           <kbd className="font-sans">space</kbd> + drag · pan &nbsp;·&nbsp;{" "}
           <kbd className="font-sans">wheel</kbd> · zoom &nbsp;·&nbsp;{" "}
           <kbd className="font-sans">0</kbd> · reset &nbsp;·&nbsp;{" "}
-          <kbd className="font-sans">⌃</kbd> + drag corner · rotate &nbsp;·&nbsp;{" "}
-          <kbd className="font-sans">R</kbd> · 45° &nbsp;·&nbsp;{" "}
+          drag corner edge · rotate &nbsp;·&nbsp;{" "}
+          <kbd className="font-sans">R</kbd> · 15° &nbsp;·&nbsp;{" "}
           <kbd className="font-sans">⌫</kbd> · delete
         </div>
       </div>

@@ -33,9 +33,9 @@ const CREASE_R = 6; // goal crease radius
 const FACEOFF_SPOT_R = 1; // red faceoff spots ≈ 2 ft diameter
 const CENTER_SPOT_R = 0.5; // center-ice blue spot = 12 in diameter
 
-// Real-world line thicknesses (feet), per rink spec:
-//   red lines (goal + center) and blue lines = 12 in = 1 ft
-//   all other markings (circles, creases, spots' rings, hash marks) = 2 in
+// Real-world line thicknesses (feet):
+//   center line and blue lines = 12 in = 1 ft
+//   goal lines and all other markings (circles, creases, hash marks) = 2 in
 const LINE_W_FT = 1;
 const MARK_W_FT = 2 / 12;
 
@@ -57,8 +57,6 @@ type RinkGeometry = {
   spots: { x: number; y: number }[];
   /** Goal creases: `dir` is the direction the arc bulges (toward open ice). */
   creases: { x: number; dir: 1 | -1 }[];
-  /** Goal nets: `dir` is the direction the net extends (toward end boards). */
-  goals: { x: number; dir: 1 | -1 }[];
 };
 
 /** End-zone faceoff pair (two circles + their red spots) at goal-relative x. */
@@ -102,10 +100,6 @@ function geometryFor(kind: FrameKind): RinkGeometry {
           { x: 11, dir: 1 },
           { x: 189, dir: -1 },
         ],
-        goals: [
-          { x: 11, dir: -1 },
-          { x: 189, dir: 1 },
-        ],
       };
     }
     case "half-rink": {
@@ -122,7 +116,6 @@ function geometryFor(kind: FrameKind): RinkGeometry {
         centerCircle: { x: 100, y: CENTER_Y },
         spots: [...left.spots, { x: 80, y: Y_TOP }, { x: 80, y: Y_BOT }],
         creases: [{ x: 11, dir: 1 }],
-        goals: [{ x: 11, dir: -1 }],
       };
     }
     case "offensive-zone": {
@@ -139,7 +132,6 @@ function geometryFor(kind: FrameKind): RinkGeometry {
         circles: zone.circles,
         spots: zone.spots,
         creases: [{ x: 53, dir: -1 }],
-        goals: [{ x: 53, dir: 1 }],
       };
     }
     case "defensive-zone": {
@@ -155,7 +147,6 @@ function geometryFor(kind: FrameKind): RinkGeometry {
         circles: zone.circles,
         spots: zone.spots,
         creases: [{ x: 11, dir: 1 }],
-        goals: [{ x: 11, dir: -1 }],
       };
     }
     case "neutral-zone": {
@@ -176,7 +167,6 @@ function geometryFor(kind: FrameKind): RinkGeometry {
           { x: 45, y: Y_BOT },
         ],
         creases: [],
-        goals: [],
       };
     }
   }
@@ -221,7 +211,8 @@ export function RinkMarkings({
       </defs>
 
       <g clipPath={`url(#${clipId})`} style={{ pointerEvents: "none" }}>
-        {/* Vertical lines: goal + center (red) and blue lines, all 12 in. */}
+        {/* Vertical lines. Center (red) and blue lines are 12 in; goal lines
+            are thin (2 in), matching real rink markings. */}
         {geo.lines.map((ln, i) => {
           const x = toX(ln.x);
           return (
@@ -232,7 +223,7 @@ export function RinkMarkings({
               x2={x}
               y2={bottom}
               stroke={ln.kind === "blue" ? BLUE : RED}
-              strokeWidth={lineW}
+              strokeWidth={ln.kind === "goal" ? markW : lineW}
             />
           );
         })}
@@ -250,25 +241,6 @@ export function RinkMarkings({
               d={d}
               fill={CREASE_FILL}
               stroke={CREASE_STROKE}
-              strokeWidth={markW}
-            />
-          );
-        })}
-
-        {/* Goal nets. */}
-        {geo.goals.map((g, i) => {
-          const gx = toX(g.x);
-          const depth = 4 * s;
-          const x = g.dir === 1 ? gx : gx - depth;
-          return (
-            <rect
-              key={`goal-${i}`}
-              x={x}
-              y={toY(CENTER_Y) - 3 * s}
-              width={depth}
-              height={6 * s}
-              fill="rgba(220, 38, 38, 0.12)"
-              stroke={RED}
               strokeWidth={markW}
             />
           );
