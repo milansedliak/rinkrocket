@@ -6,12 +6,15 @@ import { Canvas } from "@/components/canvas/canvas";
 import { FrameSidebar } from "@/components/sidebar/frame-sidebar";
 import {
   clonePlacedFrame,
+  createMarker,
   createPath,
   createPlayer,
   getFrameTemplate,
   placeFrameFromTemplate,
   type DrawToolId,
   type FrameKind,
+  type MarkerElement,
+  type MarkerKind,
   type PathElement,
   type PathEndStyle,
   type PathKind,
@@ -135,6 +138,20 @@ export function Editor() {
     [],
   );
 
+  const handleAddMarker = useCallback(
+    (frameId: string, kind: MarkerKind, localPos: { x: number; y: number }) => {
+      const marker = createMarker(kind, localPos);
+      setFrames((prev) =>
+        prev.map((f) =>
+          f.id === frameId ? { ...f, elements: [...f.elements, marker] } : f,
+        ),
+      );
+      setSelectedFrameIds([]);
+      setSelectedElement({ frameId, elementId: marker.id });
+    },
+    [],
+  );
+
   const handleAddPath = useCallback(
     (
       frameId: string,
@@ -158,7 +175,7 @@ export function Editor() {
     (
       frameId: string,
       elementId: string,
-      partial: Partial<PlayerElement> | Partial<PathElement>,
+      partial: Partial<PlayerElement> | Partial<PathElement> | Partial<MarkerElement>,
     ) => {
       setFrames((prev) =>
         prev.map((f) =>
@@ -214,6 +231,7 @@ export function Editor() {
           onPasteFrames={handlePasteFrames}
           onDuplicateFrames={handleDuplicateFrames}
           onAddPlayer={handleAddPlayer}
+          onAddMarker={handleAddMarker}
           onAddPath={handleAddPath}
           onSelectElement={handleSelectElement}
           onUpdateElement={handleUpdateElement}

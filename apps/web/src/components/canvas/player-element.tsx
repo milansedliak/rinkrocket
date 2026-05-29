@@ -5,6 +5,10 @@ import {
   RINK_NOMINAL_HEIGHT_FT,
   type PlayerElement,
 } from "@/lib/frame";
+import {
+  ELEMENT_ROTATE_ATTR,
+  ROTATE_CURSOR,
+} from "./interaction";
 
 const SELECTION_COLOR = "rgb(14, 165, 233)"; // sky-500
 
@@ -64,9 +68,12 @@ export function PlayerView({
   const r = (PLAYER_DIAMETER_FT / 2) * (frameH / RINK_NOMINAL_HEIGHT_FT);
   const selStroke = 1.5 / pxPerFt;
   const selGap = r * 0.22;
+  const rotateHandleR = 5 / pxPerFt;
+  const rotateHandleOffset = r + 10 / pxPerFt;
 
   const style = TEAM_STYLE[el.team];
   const cursor = spaceHeld ? undefined : "move";
+  const rotateCursor = spaceHeld ? undefined : ROTATE_CURSOR;
   const glyphW = r * 0.3; // glyph stroke width
   const haloW = glyphW + r * 0.18; // white halo behind the glyph
 
@@ -81,13 +88,11 @@ export function PlayerView({
   } as const;
 
   return (
-    <g
-      transform={el.rotation ? `rotate(${el.rotation} ${cx} ${cy})` : undefined}
-    >
+    <g transform={`translate(${cx} ${cy}) rotate(${el.rotation})`}>
       {selected && (
         <circle
-          cx={cx}
-          cy={cy}
+          cx={0}
+          cy={0}
           r={r + selGap}
           fill="none"
           stroke={SELECTION_COLOR}
@@ -96,11 +101,25 @@ export function PlayerView({
         />
       )}
 
+      {selected && (
+        <circle
+          {...dataAttrs}
+          data-element-rotate={ELEMENT_ROTATE_ATTR}
+          cx={0}
+          cy={-rotateHandleOffset}
+          r={rotateHandleR}
+          fill="#ffffff"
+          stroke={SELECTION_COLOR}
+          strokeWidth={selStroke}
+          style={{ cursor: rotateCursor }}
+        />
+      )}
+
       {/* Transparent hit area covering the whole token — easy to click/grab. */}
       <circle
         {...dataAttrs}
-        cx={cx}
-        cy={cy}
+        cx={0}
+        cy={0}
         r={r}
         fill="transparent"
         style={{ cursor }}
@@ -109,8 +128,8 @@ export function PlayerView({
       {style.glyph === "O" ? (
         <>
           <circle
-            cx={cx}
-            cy={cy}
+            cx={0}
+            cy={0}
             r={ringR}
             fill="none"
             stroke="#ffffff"
@@ -118,8 +137,8 @@ export function PlayerView({
             style={{ pointerEvents: "none" }}
           />
           <circle
-            cx={cx}
-            cy={cy}
+            cx={0}
+            cy={0}
             r={ringR}
             fill="none"
             stroke={style.color}
@@ -130,8 +149,8 @@ export function PlayerView({
       ) : (
         <>
           {[
-            { x1: cx - arm, y1: cy - arm, x2: cx + arm, y2: cy + arm },
-            { x1: cx - arm, y1: cy + arm, x2: cx + arm, y2: cy - arm },
+            { x1: -arm, y1: -arm, x2: arm, y2: arm },
+            { x1: -arm, y1: arm, x2: arm, y2: -arm },
           ].map((ln, i) => (
             <line
               key={`halo-${i}`}
@@ -146,8 +165,8 @@ export function PlayerView({
             />
           ))}
           {[
-            { x1: cx - arm, y1: cy - arm, x2: cx + arm, y2: cy + arm },
-            { x1: cx - arm, y1: cy + arm, x2: cx + arm, y2: cy - arm },
+            { x1: -arm, y1: -arm, x2: arm, y2: arm },
+            { x1: -arm, y1: arm, x2: arm, y2: -arm },
           ].map((ln, i) => (
             <line
               key={`x-${i}`}
@@ -167,8 +186,8 @@ export function PlayerView({
       {/* Jersey number (Team A only — the ring has room for it). */}
       {style.glyph === "O" && el.number && (
         <text
-          x={cx}
-          y={cy}
+          x={0}
+          y={0}
           fontSize={r * 0.9}
           fill={style.color}
           fontWeight={700}

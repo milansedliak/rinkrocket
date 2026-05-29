@@ -2,6 +2,7 @@
 
 import {
   FRAME_TEMPLATES,
+  MARKER_TOOLS,
   PATH_TOOLS,
   type DrawToolId,
   type PlayerTeam,
@@ -9,6 +10,7 @@ import {
 import { MovementToolButton, SelectToolButton } from "@/components/sidebar/movement-tools";
 
 import { FrameCard } from "./frame-card";
+import { MarkerCard } from "./marker-card";
 import { PlayerCard } from "./player-card";
 
 const PLAYER_TEAMS: PlayerTeam[] = ["team-a", "team-b"];
@@ -52,6 +54,26 @@ export function FrameSidebar({
             {PLAYER_TEAMS.map((team) => (
               <li key={team}>
                 <PlayerCard team={team} />
+              </li>
+            ))}
+          </ul>
+        </section>
+
+        <section>
+          <header className="border-y border-slate-200 px-4 py-3">
+            <h2 className="text-sm font-semibold text-slate-900">Equipment</h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Drag onto a frame to place goals, pucks, obstacles, and staff.
+            </p>
+          </header>
+          <ul className="space-y-2 p-3">
+            {MARKER_TOOLS.map((tool) => (
+              <li key={tool.kind}>
+                <MarkerCard
+                  kind={tool.kind}
+                  label={tool.label}
+                  description={tool.description}
+                />
               </li>
             ))}
           </ul>

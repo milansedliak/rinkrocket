@@ -100,8 +100,40 @@ export type PathElement = {
   endStyle: PathEndStyle;
 };
 
+/** Equipment and staff objects placed on the ice (parented to a frame). */
+export type MarkerKind =
+  | "goal"
+  | "puck"
+  | "bumper"
+  | "pylon"
+  | "passer"
+  | "coach";
+
+export type MarkerElement = {
+  type: "marker";
+  id: string;
+  kind: MarkerKind;
+  /** Normalized position in the parent frame (same as players). */
+  position: { x: number; y: number };
+  rotation: number;
+};
+
 /** Union of all drill elements. Grows as more primitives are added. */
-export type DrillElement = PlayerElement | PathElement;
+export type DrillElement = PlayerElement | PathElement | MarkerElement;
+
+/** Sidebar catalog for draggable equipment / staff markers. */
+export const MARKER_TOOLS: ReadonlyArray<{
+  kind: MarkerKind;
+  label: string;
+  description: string;
+}> = [
+  { kind: "goal", label: "Goal", description: "Net for shooting drills" },
+  { kind: "puck", label: "Puck", description: "Loose puck on the ice" },
+  { kind: "bumper", label: "Bumper", description: "Rubber ice bumper" },
+  { kind: "pylon", label: "Pylon", description: "Cone / obstacle" },
+  { kind: "passer", label: "Passer", description: "Stationary passer" },
+  { kind: "coach", label: "Coach", description: "Coach on the ice" },
+];
 
 /**
  * Movement tools exposed in the sidebar. Each maps to a `PathKind` plus an end
@@ -233,8 +265,40 @@ export const FRAME_DRAG_MIME = "application/x-rinkrocket-frame-kind";
 /** MIME carrying a player's team when dragging a player chip from the sidebar. */
 export const PLAYER_DRAG_MIME = "application/x-rinkrocket-player-team";
 
+/** MIME carrying a `MarkerKind` when dragging equipment from the sidebar. */
+export const MARKER_DRAG_MIME = "application/x-rinkrocket-marker";
+
 /** Nominal rink width (across the boards), shared by every frame kind. */
 export const RINK_NOMINAL_HEIGHT_FT = 85;
+
+/** Regulation NHL goal mouth width (post to post), feet. */
+export const GOAL_WIDTH_FT = 6;
+
+/** NHL goal frame depth from goal line to front of frame (~44 in). */
+export const GOAL_DEPTH_FT = 44 / 12;
+
+/** Rubber ice bumper: 1 ft wide × 12 ft long (top-down footprint). */
+export const BUMPER_WIDTH_FT = 1;
+export const BUMPER_LENGTH_FT = 12;
+
+/** Nominal footprint (feet) per marker kind — scaled by frame height / 85. */
+export const MARKER_SIZE_FT: Record<
+  MarkerKind,
+  { width: number; height: number }
+> = {
+  goal: { width: GOAL_WIDTH_FT, height: GOAL_DEPTH_FT },
+  puck: { width: RINK_NOMINAL_HEIGHT_FT / 55, height: RINK_NOMINAL_HEIGHT_FT / 55 },
+  bumper: { width: BUMPER_WIDTH_FT, height: BUMPER_LENGTH_FT },
+  pylon: { width: 2, height: 2 },
+  passer: { width: RINK_NOMINAL_HEIGHT_FT / 15, height: RINK_NOMINAL_HEIGHT_FT / 15 },
+  coach: { width: RINK_NOMINAL_HEIGHT_FT / 15, height: RINK_NOMINAL_HEIGHT_FT / 15 },
+};
+
+const VALID_MARKER_KINDS = new Set<string>(MARKER_TOOLS.map((t) => t.kind));
+
+export function isMarkerKind(value: string): value is MarkerKind {
+  return VALID_MARKER_KINDS.has(value);
+}
 
 /**
  * Player token diameter in *nominal rink feet*.
@@ -410,6 +474,20 @@ export function createPlayer(
   };
 }
 
+/** Build a new equipment / staff marker at a normalized ([0,1]) position. */
+export function createMarker(
+  kind: MarkerKind,
+  position: { x: number; y: number },
+): MarkerElement {
+  return {
+    type: "marker",
+    id: generateElementId(),
+    kind,
+    position,
+    rotation: 0,
+  };
+}
+
 /** Build a new movement-line element from normalized ([0,1]) control points. */
 export function createPath(
   kind: PathKind,
@@ -428,6 +506,9 @@ export function createPath(
 /** Deep-clone a drill element with a fresh id (used by frame duplicate). */
 export function cloneElement(el: DrillElement): DrillElement {
   if (el.type === "player") {
+    return { ...el, id: generateElementId(), position: { ...el.position } };
+  }
+  if (el.type === "marker") {
     return { ...el, id: generateElementId(), position: { ...el.position } };
   }
   return {
@@ -458,6 +539,23 @@ export function worldToFrameLocal(
   const rel = { x: world.x - c.x, y: world.y - c.y };
   const un = rotateVec(rel, -theta);
   return { x: un.x + frame.width / 2, y: un.y + frame.height / 2 };
+}
+
+/** Inverse of `worldToFrameLocal` — frame-local feet → world feet. */
+export function frameLocalToWorld(
+  frame: {
+    position: { x: number; y: number };
+    width: number;
+    height: number;
+    rotation: number;
+  },
+  local: { x: number; y: number },
+): { x: number; y: number } {
+  const theta = (frame.rotation * Math.PI) / 180;
+  const c = frameCenter(frame);
+  const rel = { x: local.x - frame.width / 2, y: local.y - frame.height / 2 };
+  const rotated = rotateVec(rel, theta);
+  return { x: c.x + rotated.x, y: c.y + rotated.y };
 }
 
 /** True if a frame-local point lies within the frame's bounding box. */

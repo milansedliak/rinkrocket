@@ -12,9 +12,9 @@ const PATH_COLOR = "#0f172a"; // slate-900
 
 // All sizes are in *nominal* rink feet and multiplied by `scale`
 // (= frameHeight / 85) so lines stay proportional to the rink at any size.
-const STROKE_FT = 0.7;
-const ARROW_LEN_FT = 3.4;
-const ARROW_HALF_W_FT = 2.1;
+const STROKE_FT = 0.4;
+const ARROW_LEN_FT = 2.8;
+const ARROW_HALF_W_FT = 1.6;
 const WAVE_AMP_FT = 1.4;
 const WAVE_LEN_FT = 4.2;
 const LOOP_R_FT = 1.5;

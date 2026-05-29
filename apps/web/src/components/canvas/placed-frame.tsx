@@ -4,37 +4,23 @@ import {
   buildFramePath,
   frameCenter,
   frameCornerRadius,
+  type MarkerElement,
   type PlacedFrame,
   type ResizeHandle,
 } from "@/lib/frame";
 import { RinkMarkings } from "./rink-markings";
 import { PlayerView } from "./player-element";
 import { PathView } from "./path-element";
+import { MarkerView } from "./marker-element";
+import {
+  FRAME_MOVE_ATTR,
+  ROTATE_CORNER_ATTR,
+  ROTATE_CURSOR,
+} from "./interaction";
+
+export { FRAME_MOVE_ATTR, ROTATE_CORNER_ATTR } from "./interaction";
 
 const SELECTION_COLOR = "rgb(14, 165, 233)"; // sky-500
-
-/**
- * Marks an element as a "move handle" for the frame. Only the name label and
- * the border edge carry this — the interior does NOT, so dragging inside the
- * frame (e.g. to place/select objects on the ice) never moves the whole frame
- * by accident. The Canvas reads `data-frame-move` at pointerdown.
- */
-export const FRAME_MOVE_ATTR = "frame-move";
-
-/**
- * Marks the invisible rotate zone just outside each corner (Figma-style). The
- * Canvas reads `data-rotate-corner` at pointerdown to start an angle-based
- * rotate around the frame's center.
- */
-export const ROTATE_CORNER_ATTR = "frame-rotate-corner";
-
-/**
- * Rotation cursor: a Lucide-style rotate-cw glyph with a white halo so it
- * reads against any background. Hotspot at (12, 12). Falls back to `grab` on
- * platforms that reject SVG cursors.
- */
-const ROTATE_CURSOR =
-  "url(\"data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath stroke='white' stroke-width='4' d='M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1.06 6.65 2.85L21 8'/%3E%3Cpath stroke='white' stroke-width='4' d='M21 3v5h-5'/%3E%3Cpath stroke='black' stroke-width='2' d='M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1.06 6.65 2.85L21 8'/%3E%3Cpath stroke='black' stroke-width='2' d='M21 3v5h-5'/%3E%3C/svg%3E\") 12 12, grab";
 
 const HANDLES: ReadonlyArray<{
   id: ResizeHandle;
@@ -177,6 +163,25 @@ export function PlacedFrameView({
           ) : null,
         )}
       {frame.elements
+        .filter(
+          (el): el is MarkerElement =>
+            el.type === "marker" && el.kind !== "puck",
+        )
+        .map((el) => (
+          <MarkerView
+            key={el.id}
+            el={el}
+            frameId={frame.id}
+            originX={frame.position.x}
+            originY={frame.position.y}
+            frameW={frame.width}
+            frameH={frame.height}
+            pxPerFt={pxPerFt}
+            selected={el.id === selectedElementId}
+            spaceHeld={spaceHeld}
+          />
+        ))}
+      {frame.elements
         .filter((el) => el.type === "player")
         .map((el) =>
           el.type === "player" ? (
@@ -194,6 +199,22 @@ export function PlacedFrameView({
             />
           ) : null,
         )}
+      {frame.elements
+        .filter((el): el is MarkerElement => el.type === "marker" && el.kind === "puck")
+        .map((el) => (
+          <MarkerView
+            key={el.id}
+            el={el}
+            frameId={frame.id}
+            originX={frame.position.x}
+            originY={frame.position.y}
+            frameW={frame.width}
+            frameH={frame.height}
+            pxPerFt={pxPerFt}
+            selected={el.id === selectedElementId}
+            spaceHeld={spaceHeld}
+          />
+        ))}
 
       {selected && (
         <path

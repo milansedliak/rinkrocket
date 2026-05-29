@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import { PlacedFrameView, ROTATE_CORNER_ATTR } from "./placed-frame";
+import { ELEMENT_ROTATE_ATTR } from "./interaction";
 import { PathShape } from "./path-element";
 import {
   applyFrameResize,
@@ -18,12 +19,17 @@ import {
   FRAME_DRAG_MIME,
   isFrameKind,
   normalizeRotation,
+  isMarkerKind,
+  MARKER_DRAG_MIME,
   PATH_TOOLS,
   PLAYER_DRAG_MIME,
   RINK_NOMINAL_HEIGHT_FT,
+  frameLocalToWorld,
   worldToFrameLocal,
   type DrawToolId,
   type FrameKind,
+  type MarkerElement,
+  type MarkerKind,
   type PathElement,
   type PathEndStyle,
   type PathKind,
@@ -71,6 +77,7 @@ type CanvasProps = {
   onPasteFrames: () => void;
   onDuplicateFrames: (frames: ReadonlyArray<PlacedFrame>) => void;
   onAddPlayer: (frameId: string, team: PlayerTeam, localPos: Vec) => void;
+  onAddMarker: (frameId: string, kind: MarkerKind, localPos: Vec) => void;
   onAddPath: (
     frameId: string,
     kind: PathKind,
@@ -81,7 +88,7 @@ type CanvasProps = {
   onUpdateElement: (
     frameId: string,
     elementId: string,
-    partial: Partial<PlayerElement> | Partial<PathElement>,
+    partial: Partial<PlayerElement> | Partial<PathElement> | Partial<MarkerElement>,
   ) => void;
   onDeleteElement: (frameId: string, elementId: string) => void;
 };
@@ -239,6 +246,7 @@ export function Canvas({
   onPasteFrames,
   onDuplicateFrames,
   onAddPlayer,
+  onAddMarker,
   onAddPath,
   onSelectElement,
   onUpdateElement,
@@ -299,7 +307,7 @@ export function Canvas({
     pointerId: number;
     frameId: string;
     elementId: string;
-    kind: "player" | "path";
+    kind: "positional" | "path";
     grabOffset?: Vec;
     startPoints?: Vec[];
     downFrac?: Vec;
@@ -358,6 +366,15 @@ export function Canvas({
     /** atan2 of (initial cursor − center), radians. */
     startAngleRad: number;
     /** Rotation (deg) at the moment the drag started. */
+    startRotationDeg: number;
+  } | null>(null);
+
+  const elementRotateDragRef = useRef<{
+    pointerId: number;
+    frameId: string;
+    elementId: string;
+    centerWorld: Vec;
+    startAngleRad: number;
     startRotationDeg: number;
   } | null>(null);
 
@@ -575,8 +592,8 @@ export function Canvas({
           const frame = framesRef.current.find((f) => f.id === elSel.frameId);
           const el = frame?.elements.find((x) => x.id === elSel.elementId);
           if (!el) return;
-          // Only players rotate; movement lines have no orientation.
-          if (el.type !== "player") return;
+          // Players and markers rotate; movement lines do not.
+          if (el.type !== "player" && el.type !== "marker") return;
           e.preventDefault();
           onUpdateElement(elSel.frameId, elSel.elementId, {
             rotation: normalizeRotation(el.rotation + dir * ROTATE_KEY_STEP_DEG),
@@ -615,6 +632,7 @@ export function Canvas({
       moveDragRef.current = null;
       resizeDragRef.current = null;
       rotateDragRef.current = null;
+      elementRotateDragRef.current = null;
       elementDragRef.current = null;
       marqueeRef.current = null;
       setMarquee(null);
@@ -750,8 +768,43 @@ export function Canvas({
       const moveAttr = target?.getAttribute("data-frame-move") ?? null;
       const rotateAttr = target?.getAttribute("data-rotate-corner") ?? null;
       const elementId = target?.getAttribute("data-element-id") ?? null;
+      const elementRotateAttr =
+        target?.getAttribute("data-element-rotate") ?? null;
 
-      // 2a. Element (player) hit — select it and start a within-frame move.
+      // 2a. Element rotate handle (player / marker).
+      if (
+        frameId &&
+        elementId &&
+        elementRotateAttr === ELEMENT_ROTATE_ATTR
+      ) {
+        const frame = framesRef.current.find((f) => f.id === frameId);
+        const el = frame?.elements.find((x) => x.id === elementId);
+        if (!frame || !el) return;
+        if (el.type !== "player" && el.type !== "marker") return;
+        e.preventDefault();
+        onSelectElement({ frameId, elementId });
+        const pivot = frameLocalToWorld(frame, {
+          x: el.position.x * frame.width,
+          y: el.position.y * frame.height,
+        });
+        const cursor = clientToWorld(e.clientX, e.clientY);
+        elementRotateDragRef.current = {
+          pointerId: e.pointerId,
+          frameId,
+          elementId,
+          centerWorld: pivot,
+          startAngleRad: Math.atan2(
+            cursor.y - pivot.y,
+            cursor.x - pivot.x,
+          ),
+          startRotationDeg: el.rotation,
+        };
+        setInteracting(true);
+        e.currentTarget.setPointerCapture(e.pointerId);
+        return;
+      }
+
+      // 2b. Element (player / marker / path) hit — select and move.
       //     Players render on top of the frame body, so this takes priority.
       if (elementId && frameId) {
         const frame = framesRef.current.find((f) => f.id === frameId);
@@ -761,14 +814,14 @@ export function Canvas({
         onSelectElement({ frameId, elementId });
         const cursor = clientToWorld(e.clientX, e.clientY);
         const local = worldToFrameLocal(frame, cursor);
-        if (el.type === "player") {
+        if (el.type === "player" || el.type === "marker") {
           // Offset in normalized frame space so the token stays under the
           // cursor regardless of frame size/rotation.
           elementDragRef.current = {
             pointerId: e.pointerId,
             frameId,
             elementId,
-            kind: "player",
+            kind: "positional",
             grabOffset: {
               x: el.position.x - local.x / frame.width,
               y: el.position.y - local.y / frame.height,
@@ -964,7 +1017,7 @@ export function Canvas({
         if (!frame) return;
         const cursor = clientToWorld(e.clientX, e.clientY);
         const local = worldToFrameLocal(frame, cursor);
-        if (elemDrag.kind === "player" && elemDrag.grabOffset) {
+        if (elemDrag.kind === "positional" && elemDrag.grabOffset) {
           onUpdateElement(elemDrag.frameId, elemDrag.elementId, {
             position: {
               x: clamp01(local.x / frame.width + elemDrag.grabOffset.x),
@@ -1023,6 +1076,24 @@ export function Canvas({
           position: next.position,
           width: next.width,
           height: next.height,
+        });
+        return;
+      }
+
+      const elRotateDrag = elementRotateDragRef.current;
+      if (elRotateDrag && e.pointerId === elRotateDrag.pointerId) {
+        const cursor = clientToWorld(e.clientX, e.clientY);
+        const angle = Math.atan2(
+          cursor.y - elRotateDrag.centerWorld.y,
+          cursor.x - elRotateDrag.centerWorld.x,
+        );
+        const deltaDeg = radToDeg(angle - elRotateDrag.startAngleRad);
+        let nextDeg = elRotateDrag.startRotationDeg + deltaDeg;
+        if (e.shiftKey) {
+          nextDeg = Math.round(nextDeg / ROTATE_SNAP_DEG) * ROTATE_SNAP_DEG;
+        }
+        onUpdateElement(elRotateDrag.frameId, elRotateDrag.elementId, {
+          rotation: normalizeRotation(nextDeg),
         });
         return;
       }
@@ -1135,6 +1206,11 @@ export function Canvas({
       rotateDragRef.current = null;
       released = true;
     }
+    const elRotateDrag = elementRotateDragRef.current;
+    if (elRotateDrag && e.pointerId === elRotateDrag.pointerId) {
+      elementRotateDragRef.current = null;
+      released = true;
+    }
     const elemDrag = elementDragRef.current;
     if (elemDrag && e.pointerId === elemDrag.pointerId) {
       elementDragRef.current = null;
@@ -1151,6 +1227,7 @@ export function Canvas({
       !moveDragRef.current &&
       !resizeDragRef.current &&
       !rotateDragRef.current &&
+      !elementRotateDragRef.current &&
       !elementDragRef.current
     ) {
       setInteracting(false);
@@ -1179,7 +1256,8 @@ export function Canvas({
   // HTML5 drag-and-drop (sidebar → canvas).
   const isCanvasDrag = (e: DragEvent<SVGSVGElement>) =>
     e.dataTransfer.types.includes(FRAME_DRAG_MIME) ||
-    e.dataTransfer.types.includes(PLAYER_DRAG_MIME);
+    e.dataTransfer.types.includes(PLAYER_DRAG_MIME) ||
+    e.dataTransfer.types.includes(MARKER_DRAG_MIME);
 
   const onDragOver = useCallback(
     (e: DragEvent<SVGSVGElement>) => {
@@ -1204,9 +1282,24 @@ export function Canvas({
         setDragHover(false);
         const world = clientToWorld(e.clientX, e.clientY);
         const frame = frameAtPoint(framesRef.current, world);
-        if (!frame) return; // dropped on empty canvas — ignore
+        if (!frame) return;
         const local = worldToFrameLocal(frame, world);
         onAddPlayer(frame.id, playerTeam, {
+          x: clamp01(local.x / frame.width),
+          y: clamp01(local.y / frame.height),
+        });
+        return;
+      }
+
+      const markerKind = e.dataTransfer.getData(MARKER_DRAG_MIME);
+      if (isMarkerKind(markerKind)) {
+        e.preventDefault();
+        setDragHover(false);
+        const world = clientToWorld(e.clientX, e.clientY);
+        const frame = frameAtPoint(framesRef.current, world);
+        if (!frame) return;
+        const local = worldToFrameLocal(frame, world);
+        onAddMarker(frame.id, markerKind, {
           x: clamp01(local.x / frame.width),
           y: clamp01(local.y / frame.height),
         });
@@ -1220,7 +1313,7 @@ export function Canvas({
       const worldPos = clientToWorld(e.clientX, e.clientY);
       onAddFrame(kindStr, worldPos);
     },
-    [onAddFrame, onAddPlayer, clientToWorld],
+    [onAddFrame, onAddPlayer, onAddMarker, clientToWorld],
   );
 
   // Effective screen pixels per world foot. `viewport.zoom` is the dimensionless
