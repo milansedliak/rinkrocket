@@ -48,6 +48,36 @@ export type FrameTemplate = {
   roundedCorners: ReadonlyArray<FrameCorner>;
 };
 
+// ── Drill elements ────────────────────────────────────────────────────────
+// Elements (players, and later pucks/cones/paths/zones/text) are *parented* to
+// a frame: their `position` is in the frame's local, unrotated feet measured
+// from the frame's top-left corner. They render inside the frame's transform,
+// so they move, rotate, and clip together with the frame.
+
+export type PlayerTeam = "team-a" | "team-b";
+export type PlayerRole = "F" | "D" | "G";
+
+export type PlayerElement = {
+  type: "player";
+  id: string;
+  /**
+   * Normalized position within the parent frame: `x`/`y` are fractions in
+   * [0, 1] of the frame's width/height (0,0 = top-left, 1,1 = bottom-right).
+   * Storing fractions (not absolute feet) keeps a player pinned to the same
+   * relative spot — and scaling with the rink — when the frame is resized.
+   */
+  position: { x: number; y: number };
+  /** Rotation in degrees (CW), on top of the parent frame's rotation. */
+  rotation: number;
+  team: PlayerTeam;
+  /** Optional jersey number / short label. */
+  number?: string;
+  role?: PlayerRole;
+};
+
+/** Union of all drill elements. Grows as more primitives are added. */
+export type DrillElement = PlayerElement;
+
 export type PlacedFrame = {
   id: string;
   kind: FrameKind;
@@ -70,6 +100,8 @@ export type PlacedFrame = {
    * bounding-box center.
    */
   rotation: number;
+  /** Child elements (players, etc.) parented to this frame. */
+  elements: DrillElement[];
 };
 
 // All hockey-rink-shaped frames share the same NHL board curvature.
@@ -145,6 +177,26 @@ export function frameCornerRadius(frame: {
 
 /** Custom MIME so unrelated drag content (text, files) doesn't trigger a drop. */
 export const FRAME_DRAG_MIME = "application/x-rinkrocket-frame-kind";
+
+/** MIME carrying a player's team when dragging a player chip from the sidebar. */
+export const PLAYER_DRAG_MIME = "application/x-rinkrocket-player-team";
+
+/** Nominal rink width (across the boards), shared by every frame kind. */
+export const RINK_NOMINAL_HEIGHT_FT = 85;
+
+/**
+ * Player token diameter in *nominal rink feet*.
+ *
+ * Sizing formula: a real skater only occupies ≈ 3 ft of ice, but at true scale
+ * that's an unreadable speck on an 85-ft-wide sheet. Hockey diagrams always
+ * draw players larger than life for legibility. We use **1/15 of the rink
+ * width** (≈ 5.7 ft) — readable and easy to grab, while staying small enough
+ * that players don't crowd each other or dwarf the rink markings.
+ *
+ * The renderer scales this by the frame's height, so the token grows and
+ * shrinks with the rink and stays proportional at any frame size.
+ */
+export const PLAYER_DIAMETER_FT = RINK_NOMINAL_HEIGHT_FT / 15; // ≈ 5.7 ft
 
 /** Smallest a frame can be resized to (in feet). */
 export const MIN_FRAME_SIZE = 20;
@@ -286,6 +338,77 @@ export function generateFrameId(): string {
   return `frame_${Date.now().toString(36)}_${frameIdCounter.toString(36)}`;
 }
 
+let elementIdCounter = 0;
+export function generateElementId(): string {
+  elementIdCounter += 1;
+  return `el_${Date.now().toString(36)}_${elementIdCounter.toString(36)}`;
+}
+
+/** Build a new player element at a normalized ([0,1]) position in its frame. */
+export function createPlayer(
+  team: PlayerTeam,
+  position: { x: number; y: number },
+): PlayerElement {
+  return {
+    type: "player",
+    id: generateElementId(),
+    position,
+    rotation: 0,
+    team,
+  };
+}
+
+/**
+ * Convert a world-space point into a frame's local (unrotated) coordinates,
+ * measured in feet from the frame's top-left corner. This is the inverse of
+ * how parented children render (frame.position + local, then the group's
+ * rotation transform). Use it to place/drag elements correctly even when the
+ * parent frame is rotated.
+ */
+export function worldToFrameLocal(
+  frame: {
+    position: { x: number; y: number };
+    width: number;
+    height: number;
+    rotation: number;
+  },
+  world: { x: number; y: number },
+): { x: number; y: number } {
+  const theta = (frame.rotation * Math.PI) / 180;
+  const c = frameCenter(frame);
+  const rel = { x: world.x - c.x, y: world.y - c.y };
+  const un = rotateVec(rel, -theta);
+  return { x: un.x + frame.width / 2, y: un.y + frame.height / 2 };
+}
+
+/** True if a frame-local point lies within the frame's bounding box. */
+export function isLocalInsideFrame(
+  frame: { width: number; height: number },
+  local: { x: number; y: number },
+): boolean {
+  return (
+    local.x >= 0 &&
+    local.x <= frame.width &&
+    local.y >= 0 &&
+    local.y <= frame.height
+  );
+}
+
+/**
+ * Topmost frame whose (rotated) box contains the world point, or null. Frames
+ * later in the array render on top, so we scan back-to-front.
+ */
+export function frameAtPoint(
+  frames: ReadonlyArray<PlacedFrame>,
+  world: { x: number; y: number },
+): PlacedFrame | null {
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const local = worldToFrameLocal(frames[i], world);
+    if (isLocalInsideFrame(frames[i], local)) return frames[i];
+  }
+  return null;
+}
+
 /** Place a frame so that `worldCenter` lands at its center. */
 export function placeFrameFromTemplate(
   template: FrameTemplate,
@@ -304,6 +427,7 @@ export function placeFrameFromTemplate(
     cornerRadiusRatio: template.cornerRadiusRatio,
     roundedCorners: template.roundedCorners,
     rotation: 0,
+    elements: [],
   };
 }
 
@@ -328,6 +452,12 @@ export function clonePlacedFrame(
       y: frame.position.y + offset,
     },
     roundedCorners: [...frame.roundedCorners],
+    // Deep-copy child elements with fresh ids so the copy is independent.
+    elements: frame.elements.map((el) => ({
+      ...el,
+      id: generateElementId(),
+      position: { ...el.position },
+    })),
   };
 }
 

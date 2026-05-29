@@ -8,6 +8,7 @@ import {
   type ResizeHandle,
 } from "@/lib/frame";
 import { RinkMarkings } from "./rink-markings";
+import { PlayerView } from "./player-element";
 
 const SELECTION_COLOR = "rgb(14, 165, 233)"; // sky-500
 
@@ -66,6 +67,7 @@ export function PlacedFrameView({
   selected,
   showHandles,
   spaceHeld,
+  selectedElementId,
 }: {
   frame: PlacedFrame;
   pxPerFt: number;
@@ -74,6 +76,8 @@ export function PlacedFrameView({
   /** Sole selected frame — also draws resize + rotate handles. */
   showHandles: boolean;
   spaceHeld: boolean;
+  /** Id of the selected child element in this frame, if any. */
+  selectedElementId: string | null;
 }) {
   const stroke = 2 / pxPerFt;
   // Figma-style frame title: a fixed on-screen size (~11px) regardless of zoom
@@ -148,6 +152,26 @@ export function PlacedFrameView({
       >
         {frame.label}
       </text>
+
+      {/* Parented child elements (players). Rendered above the body/markings
+          and the border move-band so a click hits the element, not the frame.
+          They inherit the frame's rotation via this same <g>. */}
+      {frame.elements.map((el) =>
+        el.type === "player" ? (
+          <PlayerView
+            key={el.id}
+            el={el}
+            frameId={frame.id}
+            originX={frame.position.x}
+            originY={frame.position.y}
+            frameW={frame.width}
+            frameH={frame.height}
+            pxPerFt={pxPerFt}
+            selected={el.id === selectedElementId}
+            spaceHeld={spaceHeld}
+          />
+        ) : null,
+      )}
 
       {selected && (
         <path

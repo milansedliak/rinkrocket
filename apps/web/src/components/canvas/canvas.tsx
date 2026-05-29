@@ -12,12 +12,17 @@ import {
 import { PlacedFrameView, ROTATE_CORNER_ATTR } from "./placed-frame";
 import {
   applyFrameResize,
+  frameAtPoint,
   frameCenter,
   FRAME_DRAG_MIME,
   isFrameKind,
   normalizeRotation,
+  PLAYER_DRAG_MIME,
+  worldToFrameLocal,
   type FrameKind,
   type PlacedFrame,
+  type PlayerElement,
+  type PlayerTeam,
   type ResizeHandle,
 } from "@/lib/frame";
 import {
@@ -38,9 +43,12 @@ type Viewport = {
 
 type FrameUpdate = { id: string; partial: Partial<PlacedFrame> };
 
+type ElementSelection = { frameId: string; elementId: string } | null;
+
 type CanvasProps = {
   frames: PlacedFrame[];
   selectedFrameIds: string[];
+  selectedElement: ElementSelection;
   onAddFrame: (kind: FrameKind, worldPos: Vec) => void;
   onSelectionChange: (ids: string[]) => void;
   /** Single-frame update — used by resize/rotate of the sole selected frame. */
@@ -51,6 +59,14 @@ type CanvasProps = {
   onCopyFrames: (frames: ReadonlyArray<PlacedFrame>) => void;
   onPasteFrames: () => void;
   onDuplicateFrames: (frames: ReadonlyArray<PlacedFrame>) => void;
+  onAddPlayer: (frameId: string, team: PlayerTeam, localPos: Vec) => void;
+  onSelectElement: (sel: ElementSelection) => void;
+  onUpdateElement: (
+    frameId: string,
+    elementId: string,
+    partial: Partial<PlayerElement>,
+  ) => void;
+  onDeleteElement: (frameId: string, elementId: string) => void;
 };
 
 /**
@@ -96,6 +112,7 @@ const isResizeHandle = (v: string): v is ResizeHandle =>
   (RESIZE_HANDLES as readonly string[]).includes(v);
 
 const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
+const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
 
 // Figma-style rotation: free-rotate by default; hold Shift to snap.
 const ROTATE_SNAP_DEG = 15;
@@ -114,11 +131,12 @@ const radToDeg = (r: number) => (r * 180) / Math.PI;
  *
  * Interaction priority on pointer-down:
  *   1. Space held or middle mouse        → pan
- *   2. Hit a corner's rotate zone        → rotate around bbox center (sole sel)
- *   3. Hit a resize handle               → resize (sole sel)
- *   4. Hit the name label or border edge → select + start group move
- *   5. Hit the frame interior            → select only (no move)
- *   6. Empty background                  → marquee select (Shift adds)
+ *   2. Hit a player/element              → select element + move within frame
+ *   3. Hit a corner's rotate zone        → rotate around bbox center (sole sel)
+ *   4. Hit a resize handle               → resize (sole sel)
+ *   5. Hit the name label or border edge → select + start group move
+ *   6. Hit the frame interior            → select only (no move)
+ *   7. Empty background                  → marquee select (Shift adds)
  *
  * Shift+click a frame toggles it in/out of the selection.
  *
@@ -138,6 +156,7 @@ const radToDeg = (r: number) => (r * 180) / Math.PI;
 export function Canvas({
   frames,
   selectedFrameIds,
+  selectedElement,
   onAddFrame,
   onSelectionChange,
   onUpdateFrame,
@@ -146,6 +165,10 @@ export function Canvas({
   onCopyFrames,
   onPasteFrames,
   onDuplicateFrames,
+  onAddPlayer,
+  onSelectElement,
+  onUpdateElement,
+  onDeleteElement,
 }: CanvasProps) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -177,6 +200,8 @@ export function Canvas({
   framesRef.current = frames;
   const selectedFrameIdsRef = useRef(selectedFrameIds);
   selectedFrameIdsRef.current = selectedFrameIds;
+  const selectedElementRef = useRef(selectedElement);
+  selectedElementRef.current = selectedElement;
 
   const panDragRef = useRef<{
     pointerId: number;
@@ -190,6 +215,16 @@ export function Canvas({
     pointerId: number;
     startClient: Vec;
     starts: ReadonlyArray<{ id: string; pos: Vec }>;
+  } | null>(null);
+
+  // Element (player) move: drag a parented element within its frame. The grab
+  // offset is stored in the frame's local coords so the element stays under the
+  // cursor even when the parent frame is rotated.
+  const elementDragRef = useRef<{
+    pointerId: number;
+    frameId: string;
+    elementId: string;
+    grabOffset: Vec;
   } | null>(null);
 
   // Marquee (rubber-band) drag from empty background.
@@ -331,13 +366,22 @@ export function Canvas({
         return;
       }
       if (e.key === "Escape") {
-        if (selectedFrameIdsRef.current.length > 0) {
+        if (selectedElementRef.current) {
+          e.preventDefault();
+          onSelectElement(null);
+        } else if (selectedFrameIdsRef.current.length > 0) {
           e.preventDefault();
           onSelectionChange([]);
         }
         return;
       }
       if (e.key === "Backspace" || e.key === "Delete") {
+        const el = selectedElementRef.current;
+        if (el) {
+          e.preventDefault();
+          onDeleteElement(el.frameId, el.elementId);
+          return;
+        }
         const ids = selectedFrameIdsRef.current;
         if (ids.length) {
           e.preventDefault();
@@ -382,13 +426,24 @@ export function Canvas({
       }
 
       // Plain R / Shift+R only — never swallow Ctrl+R or Cmd+R, those are
-      // the browser's reload shortcut. Rotates every selected frame about its
-      // own center.
+      // the browser's reload shortcut. Rotates the selected element, else every
+      // selected frame, about its own center.
       if ((e.key === "r" || e.key === "R") && !e.ctrlKey && !e.metaKey) {
+        const dir = e.shiftKey ? -1 : 1;
+        const elSel = selectedElementRef.current;
+        if (elSel) {
+          const frame = framesRef.current.find((f) => f.id === elSel.frameId);
+          const el = frame?.elements.find((x) => x.id === elSel.elementId);
+          if (!el) return;
+          e.preventDefault();
+          onUpdateElement(elSel.frameId, elSel.elementId, {
+            rotation: normalizeRotation(el.rotation + dir * ROTATE_KEY_STEP_DEG),
+          });
+          return;
+        }
         const sel = selectedFrames();
         if (!sel.length) return;
         e.preventDefault();
-        const dir = e.shiftKey ? -1 : 1;
         onUpdateFrames(
           sel.map((f) => ({
             id: f.id,
@@ -418,6 +473,7 @@ export function Canvas({
       moveDragRef.current = null;
       resizeDragRef.current = null;
       rotateDragRef.current = null;
+      elementDragRef.current = null;
       marqueeRef.current = null;
       setMarquee(null);
       setPanning(false);
@@ -441,6 +497,9 @@ export function Canvas({
     onCopyFrames,
     onPasteFrames,
     onDuplicateFrames,
+    onSelectElement,
+    onUpdateElement,
+    onDeleteElement,
   ]);
 
   /** Convert a clientX/Y to world coords using the current viewport. */
@@ -478,6 +537,33 @@ export function Canvas({
       const handleAttr = target?.getAttribute("data-handle") ?? null;
       const moveAttr = target?.getAttribute("data-frame-move") ?? null;
       const rotateAttr = target?.getAttribute("data-rotate-corner") ?? null;
+      const elementId = target?.getAttribute("data-element-id") ?? null;
+
+      // 2a. Element (player) hit — select it and start a within-frame move.
+      //     Players render on top of the frame body, so this takes priority.
+      if (elementId && frameId) {
+        const frame = framesRef.current.find((f) => f.id === frameId);
+        const el = frame?.elements.find((x) => x.id === elementId);
+        if (!frame || !el) return;
+        e.preventDefault();
+        onSelectElement({ frameId, elementId });
+        const cursor = clientToWorld(e.clientX, e.clientY);
+        const local = worldToFrameLocal(frame, cursor);
+        // Offset in normalized frame space so the element stays under the
+        // cursor regardless of frame size/rotation.
+        elementDragRef.current = {
+          pointerId: e.pointerId,
+          frameId,
+          elementId,
+          grabOffset: {
+            x: el.position.x - local.x / frame.width,
+            y: el.position.y - local.y / frame.height,
+          },
+        };
+        setInteracting(true);
+        e.currentTarget.setPointerCapture(e.pointerId);
+        return;
+      }
 
       // 2. Rotate. Grabbing a corner's rotate zone (just outside the resize
       //    handle) starts an angle-based rotation around the frame's bbox
@@ -582,7 +668,7 @@ export function Canvas({
       }
       e.currentTarget.setPointerCapture(e.pointerId);
     },
-    [onSelectionChange, clientToWorld],
+    [onSelectionChange, onSelectElement, clientToWorld],
   );
 
   const onPointerMove = useCallback(
@@ -599,6 +685,21 @@ export function Canvas({
       }
 
       const pxPerFt = viewportRef.current.zoom * PX_PER_FT_AT_100;
+
+      const elemDrag = elementDragRef.current;
+      if (elemDrag && e.pointerId === elemDrag.pointerId) {
+        const frame = framesRef.current.find((f) => f.id === elemDrag.frameId);
+        if (!frame) return;
+        const cursor = clientToWorld(e.clientX, e.clientY);
+        const local = worldToFrameLocal(frame, cursor);
+        onUpdateElement(elemDrag.frameId, elemDrag.elementId, {
+          position: {
+            x: clamp01(local.x / frame.width + elemDrag.grabOffset.x),
+            y: clamp01(local.y / frame.height + elemDrag.grabOffset.y),
+          },
+        });
+        return;
+      }
 
       const moveDrag = moveDragRef.current;
       if (moveDrag && e.pointerId === moveDrag.pointerId) {
@@ -685,7 +786,13 @@ export function Canvas({
         return;
       }
     },
-    [onUpdateFrame, onUpdateFrames, onSelectionChange, clientToWorld],
+    [
+      onUpdateFrame,
+      onUpdateFrames,
+      onUpdateElement,
+      onSelectionChange,
+      clientToWorld,
+    ],
   );
 
   const endPointer = useCallback((e: PointerEvent<SVGSVGElement>) => {
@@ -712,6 +819,11 @@ export function Canvas({
       rotateDragRef.current = null;
       released = true;
     }
+    const elemDrag = elementDragRef.current;
+    if (elemDrag && e.pointerId === elemDrag.pointerId) {
+      elementDragRef.current = null;
+      released = true;
+    }
     const marqueeDrag = marqueeRef.current;
     if (marqueeDrag && e.pointerId === marqueeDrag.pointerId) {
       marqueeRef.current = null;
@@ -722,7 +834,8 @@ export function Canvas({
     if (
       !moveDragRef.current &&
       !resizeDragRef.current &&
-      !rotateDragRef.current
+      !rotateDragRef.current &&
+      !elementDragRef.current
     ) {
       setInteracting(false);
     }
@@ -737,12 +850,13 @@ export function Canvas({
   }, []);
 
   // HTML5 drag-and-drop (sidebar → canvas).
-  const isFrameDrag = (e: DragEvent<SVGSVGElement>) =>
-    e.dataTransfer.types.includes(FRAME_DRAG_MIME);
+  const isCanvasDrag = (e: DragEvent<SVGSVGElement>) =>
+    e.dataTransfer.types.includes(FRAME_DRAG_MIME) ||
+    e.dataTransfer.types.includes(PLAYER_DRAG_MIME);
 
   const onDragOver = useCallback(
     (e: DragEvent<SVGSVGElement>) => {
-      if (!isFrameDrag(e)) return;
+      if (!isCanvasDrag(e)) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
       if (!dragHover) setDragHover(true);
@@ -756,24 +870,30 @@ export function Canvas({
 
   const onDrop = useCallback(
     (e: DragEvent<SVGSVGElement>) => {
+      // Player drop: must land on a frame (players are parented).
+      const playerTeam = e.dataTransfer.getData(PLAYER_DRAG_MIME);
+      if (playerTeam === "team-a" || playerTeam === "team-b") {
+        e.preventDefault();
+        setDragHover(false);
+        const world = clientToWorld(e.clientX, e.clientY);
+        const frame = frameAtPoint(framesRef.current, world);
+        if (!frame) return; // dropped on empty canvas — ignore
+        const local = worldToFrameLocal(frame, world);
+        onAddPlayer(frame.id, playerTeam, {
+          x: clamp01(local.x / frame.width),
+          y: clamp01(local.y / frame.height),
+        });
+        return;
+      }
+
       const kindStr = e.dataTransfer.getData(FRAME_DRAG_MIME);
       if (!isFrameKind(kindStr)) return;
       e.preventDefault();
       setDragHover(false);
-
-      const rect = svgRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const screenX = e.clientX - rect.left;
-      const screenY = e.clientY - rect.top;
-      const v = viewportRef.current;
-      const pxPerFt = v.zoom * PX_PER_FT_AT_100;
-      const worldPos: Vec = {
-        x: (screenX - v.pan.x) / pxPerFt,
-        y: (screenY - v.pan.y) / pxPerFt,
-      };
+      const worldPos = clientToWorld(e.clientX, e.clientY);
       onAddFrame(kindStr, worldPos);
     },
-    [onAddFrame],
+    [onAddFrame, onAddPlayer, clientToWorld],
   );
 
   // Effective screen pixels per world foot. `viewport.zoom` is the dimensionless
@@ -903,6 +1023,11 @@ export function Canvas({
                 selectedFrameIds.length === 1 && selectedFrameIds[0] === frame.id
               }
               spaceHeld={spaceHeld}
+              selectedElementId={
+                selectedElement?.frameId === frame.id
+                  ? selectedElement.elementId
+                  : null
+              }
             />
           ))}
         </g>

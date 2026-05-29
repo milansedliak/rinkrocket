@@ -6,11 +6,17 @@ import { Canvas } from "@/components/canvas/canvas";
 import { FrameSidebar } from "@/components/sidebar/frame-sidebar";
 import {
   clonePlacedFrame,
+  createPlayer,
   getFrameTemplate,
   placeFrameFromTemplate,
   type FrameKind,
   type PlacedFrame,
+  type PlayerElement,
+  type PlayerTeam,
 } from "@/lib/frame";
+
+/** Which child element (if any) is selected, identified by frame + element. */
+type ElementSelection = { frameId: string; elementId: string } | null;
 
 /**
  * Editor layout: infinite canvas on the left, frames sidebar on the right.
@@ -20,6 +26,7 @@ import {
 export function Editor() {
   const [frames, setFrames] = useState<PlacedFrame[]>([]);
   const [selectedFrameIds, setSelectedFrameIds] = useState<string[]>([]);
+  const [selectedElement, setSelectedElement] = useState<ElementSelection>(null);
 
   // In-memory clipboard for copy/paste (not the OS clipboard — frames are
   // structured data, and this keeps paste working without clipboard perms).
@@ -32,9 +39,21 @@ export function Editor() {
       const placed = placeFrameFromTemplate(template, worldPos);
       setFrames((prev) => [...prev, placed]);
       setSelectedFrameIds([placed.id]);
+      setSelectedElement(null);
     },
     [],
   );
+
+  // Frame selection and element selection are mutually exclusive.
+  const handleSelectionChange = useCallback((ids: string[]) => {
+    setSelectedFrameIds(ids);
+    setSelectedElement(null);
+  }, []);
+
+  const handleSelectElement = useCallback((sel: ElementSelection) => {
+    setSelectedElement(sel);
+    if (sel) setSelectedFrameIds([]);
+  }, []);
 
   const handleUpdateFrame = useCallback(
     (id: string, partial: Partial<PlacedFrame>) => {
@@ -86,6 +105,59 @@ export function Editor() {
       const copies = toDup.map((f) => clonePlacedFrame(f));
       setFrames((prev) => [...prev, ...copies]);
       setSelectedFrameIds(copies.map((c) => c.id));
+      setSelectedElement(null);
+    },
+    [],
+  );
+
+  // ── Element (player) operations ──────────────────────────────────────────
+
+  const handleAddPlayer = useCallback(
+    (frameId: string, team: PlayerTeam, localPos: { x: number; y: number }) => {
+      const player = createPlayer(team, localPos);
+      setFrames((prev) =>
+        prev.map((f) =>
+          f.id === frameId ? { ...f, elements: [...f.elements, player] } : f,
+        ),
+      );
+      setSelectedFrameIds([]);
+      setSelectedElement({ frameId, elementId: player.id });
+    },
+    [],
+  );
+
+  const handleUpdateElement = useCallback(
+    (frameId: string, elementId: string, partial: Partial<PlayerElement>) => {
+      setFrames((prev) =>
+        prev.map((f) =>
+          f.id === frameId
+            ? {
+                ...f,
+                elements: f.elements.map((el) =>
+                  el.id === elementId ? { ...el, ...partial } : el,
+                ),
+              }
+            : f,
+        ),
+      );
+    },
+    [],
+  );
+
+  const handleDeleteElement = useCallback(
+    (frameId: string, elementId: string) => {
+      setFrames((prev) =>
+        prev.map((f) =>
+          f.id === frameId
+            ? { ...f, elements: f.elements.filter((el) => el.id !== elementId) }
+            : f,
+        ),
+      );
+      setSelectedElement((cur) =>
+        cur && cur.frameId === frameId && cur.elementId === elementId
+          ? null
+          : cur,
+      );
     },
     [],
   );
@@ -96,14 +168,19 @@ export function Editor() {
         <Canvas
           frames={frames}
           selectedFrameIds={selectedFrameIds}
+          selectedElement={selectedElement}
           onAddFrame={handleAddFrame}
-          onSelectionChange={setSelectedFrameIds}
+          onSelectionChange={handleSelectionChange}
           onUpdateFrame={handleUpdateFrame}
           onUpdateFrames={handleUpdateFrames}
           onDeleteFrames={handleDeleteFrames}
           onCopyFrames={handleCopyFrames}
           onPasteFrames={handlePasteFrames}
           onDuplicateFrames={handleDuplicateFrames}
+          onAddPlayer={handleAddPlayer}
+          onSelectElement={handleSelectElement}
+          onUpdateElement={handleUpdateElement}
+          onDeleteElement={handleDeleteElement}
         />
       </div>
       <FrameSidebar />
