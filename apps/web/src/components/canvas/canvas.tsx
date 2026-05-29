@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import { PlacedFrameView, ROTATE_CORNER_ATTR } from "./placed-frame";
+import { PathShape } from "./path-element";
 import {
   applyFrameResize,
   frameAtPoint,
@@ -17,9 +18,15 @@ import {
   FRAME_DRAG_MIME,
   isFrameKind,
   normalizeRotation,
+  PATH_TOOLS,
   PLAYER_DRAG_MIME,
+  RINK_NOMINAL_HEIGHT_FT,
   worldToFrameLocal,
+  type DrawToolId,
   type FrameKind,
+  type PathElement,
+  type PathEndStyle,
+  type PathKind,
   type PlacedFrame,
   type PlayerElement,
   type PlayerTeam,
@@ -45,10 +52,14 @@ type FrameUpdate = { id: string; partial: Partial<PlacedFrame> };
 
 type ElementSelection = { frameId: string; elementId: string } | null;
 
+type Tool = "select" | DrawToolId;
+
 type CanvasProps = {
   frames: PlacedFrame[];
   selectedFrameIds: string[];
   selectedElement: ElementSelection;
+  activeTool: Tool;
+  onToolChange: (tool: Tool) => void;
   onAddFrame: (kind: FrameKind, worldPos: Vec) => void;
   onSelectionChange: (ids: string[]) => void;
   /** Single-frame update — used by resize/rotate of the sole selected frame. */
@@ -60,14 +71,74 @@ type CanvasProps = {
   onPasteFrames: () => void;
   onDuplicateFrames: (frames: ReadonlyArray<PlacedFrame>) => void;
   onAddPlayer: (frameId: string, team: PlayerTeam, localPos: Vec) => void;
+  onAddPath: (
+    frameId: string,
+    kind: PathKind,
+    endStyle: PathEndStyle,
+    points: ReadonlyArray<Vec>,
+  ) => void;
   onSelectElement: (sel: ElementSelection) => void;
   onUpdateElement: (
     frameId: string,
     elementId: string,
-    partial: Partial<PlayerElement>,
+    partial: Partial<PlayerElement> | Partial<PathElement>,
   ) => void;
   onDeleteElement: (frameId: string, elementId: string) => void;
 };
+
+const toolDef = (id: Tool) =>
+  id === "select" ? null : PATH_TOOLS.find((t) => t.id === id) ?? null;
+
+// Drawing thresholds (screen px).
+const DRAW_DRAG_PX = 4; // press-move beyond this → freehand (not a click)
+const DRAW_SAMPLE_PX = 6; // min spacing between captured freehand samples
+
+/** Ramer–Douglas–Peucker simplification on normalized points. */
+function simplifyPath(points: Vec[], eps: number): Vec[] {
+  if (points.length < 3) return points.slice();
+  const sqEps = eps * eps;
+  const keep = new Array(points.length).fill(false);
+  keep[0] = true;
+  keep[points.length - 1] = true;
+
+  const stack: [number, number][] = [[0, points.length - 1]];
+  while (stack.length) {
+    const [first, last] = stack.pop()!;
+    let maxSq = 0;
+    let idx = -1;
+    const a = points[first];
+    const b = points[last];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy || 1e-9;
+    for (let i = first + 1; i < last; i++) {
+      const p = points[i];
+      const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+      const px = a.x + t * dx;
+      const py = a.y + t * dy;
+      const sq = (p.x - px) ** 2 + (p.y - py) ** 2;
+      if (sq > maxSq) {
+        maxSq = sq;
+        idx = i;
+      }
+    }
+    if (maxSq > sqEps && idx !== -1) {
+      keep[idx] = true;
+      stack.push([first, idx], [idx, last]);
+    }
+  }
+  return points.filter((_, i) => keep[i]);
+}
+
+/** Drop consecutive near-identical points (e.g. from double-click finish). */
+function dedupePath(points: Vec[], eps = 1e-3): Vec[] {
+  const out: Vec[] = [];
+  for (const p of points) {
+    const last = out[out.length - 1];
+    if (!last || Math.hypot(p.x - last.x, p.y - last.y) > eps) out.push(p);
+  }
+  return out;
+}
 
 /**
  * Compute the next selection after a click on `frameId`.
@@ -157,6 +228,8 @@ export function Canvas({
   frames,
   selectedFrameIds,
   selectedElement,
+  activeTool,
+  onToolChange,
   onAddFrame,
   onSelectionChange,
   onUpdateFrame,
@@ -166,6 +239,7 @@ export function Canvas({
   onPasteFrames,
   onDuplicateFrames,
   onAddPlayer,
+  onAddPath,
   onSelectElement,
   onUpdateElement,
   onDeleteElement,
@@ -217,15 +291,43 @@ export function Canvas({
     starts: ReadonlyArray<{ id: string; pos: Vec }>;
   } | null>(null);
 
-  // Element (player) move: drag a parented element within its frame. The grab
-  // offset is stored in the frame's local coords so the element stays under the
-  // cursor even when the parent frame is rotated.
+  // Element move: drag a parented element within its frame.
+  //  - player: `grabOffset` (normalized) keeps the token under the cursor.
+  //  - path: translate every control point; `startPoints`/`downFrac` capture
+  //    the state at grab so the whole line shifts rigidly and clamps to bounds.
   const elementDragRef = useRef<{
     pointerId: number;
     frameId: string;
     elementId: string;
-    grabOffset: Vec;
+    kind: "player" | "path";
+    grabOffset?: Vec;
+    startPoints?: Vec[];
+    downFrac?: Vec;
   } | null>(null);
+
+  // In-progress movement line. `drawRef` is the source of truth for handlers;
+  // `draft`/`draftCursor` mirror it to drive the live preview render.
+  const drawRef = useRef<{
+    pointerId: number;
+    frameId: string;
+    kind: PathKind;
+    endStyle: PathEndStyle;
+    points: Vec[]; // normalized [0,1] within the frame
+    mode: "pending" | "freehand" | "poly";
+    downClient: Vec;
+    lastSampleClient: Vec;
+  } | null>(null);
+  const [draft, setDraft] = useState<{
+    frameId: string;
+    kind: PathKind;
+    endStyle: PathEndStyle;
+    points: Vec[];
+  } | null>(null);
+  // Live cursor (normalized) shown as a rubber-band segment in poly mode.
+  const [draftCursor, setDraftCursor] = useState<Vec | null>(null);
+
+  const activeToolRef = useRef(activeTool);
+  activeToolRef.current = activeTool;
 
   // Marquee (rubber-band) drag from empty background.
   const marqueeRef = useRef<{
@@ -307,6 +409,28 @@ export function Canvas({
     });
   }, []);
 
+  const cancelDraft = useCallback(() => {
+    drawRef.current = null;
+    setDraft(null);
+    setDraftCursor(null);
+  }, []);
+
+  /** Finish the in-progress line and persist it (if it has ≥2 points). */
+  const commitDraft = useCallback(() => {
+    const d = drawRef.current;
+    drawRef.current = null;
+    setDraft(null);
+    setDraftCursor(null);
+    if (!d) return;
+    let pts = dedupePath(d.points);
+    // Puck-carry freehand *is* the squiggle — aggressive RDP would flatten it.
+    if (d.mode === "freehand" && d.kind !== "carry") {
+      pts = simplifyPath(pts, 0.004);
+    }
+    if (pts.length < 2) return;
+    onAddPath(d.frameId, d.kind, d.endStyle, pts);
+  }, [onAddPath]);
+
   // Native wheel listener — React's synthetic wheel events are passive and
   // can't preventDefault, which we need to stop browser page zoom.
   useEffect(() => {
@@ -366,12 +490,28 @@ export function Canvas({
         return;
       }
       if (e.key === "Escape") {
-        if (selectedElementRef.current) {
+        if (drawRef.current) {
+          e.preventDefault();
+          cancelDraft();
+        } else if (activeToolRef.current !== "select") {
+          e.preventDefault();
+          onToolChange("select");
+        } else if (selectedElementRef.current) {
           e.preventDefault();
           onSelectElement(null);
         } else if (selectedFrameIdsRef.current.length > 0) {
           e.preventDefault();
           onSelectionChange([]);
+        }
+        return;
+      }
+      // Finish a click-to-add-points line.
+      if (e.key === "Enter") {
+        const d = drawRef.current;
+        if (d && d.mode === "poly") {
+          e.preventDefault();
+          if (d.points.length >= 2) commitDraft();
+          else cancelDraft();
         }
         return;
       }
@@ -435,6 +575,8 @@ export function Canvas({
           const frame = framesRef.current.find((f) => f.id === elSel.frameId);
           const el = frame?.elements.find((x) => x.id === elSel.elementId);
           if (!el) return;
+          // Only players rotate; movement lines have no orientation.
+          if (el.type !== "player") return;
           e.preventDefault();
           onUpdateElement(elSel.frameId, elSel.elementId, {
             rotation: normalizeRotation(el.rotation + dir * ROTATE_KEY_STEP_DEG),
@@ -500,6 +642,9 @@ export function Canvas({
     onSelectElement,
     onUpdateElement,
     onDeleteElement,
+    onToolChange,
+    cancelDraft,
+    commitDraft,
   ]);
 
   /** Convert a clientX/Y to world coords using the current viewport. */
@@ -513,6 +658,11 @@ export function Canvas({
       y: (clientY - rect.top - v.pan.y) / pxPerFt,
     };
   }, []);
+
+  // Switching the active tool abandons any in-progress draft.
+  useEffect(() => {
+    cancelDraft();
+  }, [activeTool, cancelDraft]);
 
   const onPointerDown = useCallback(
     (e: PointerEvent<SVGSVGElement>) => {
@@ -532,6 +682,68 @@ export function Canvas({
       // Only the primary (left) button drives selection/move/resize/rotate.
       if (e.button !== 0) return;
 
+      // 1b. Drawing tool active → add to / start a movement line. This runs
+      //     before any frame/element hit-testing so we always draw on top.
+      if (activeToolRef.current !== "select") {
+        const tool = toolDef(activeToolRef.current);
+        if (!tool) return;
+        e.preventDefault();
+        const world = clientToWorld(e.clientX, e.clientY);
+
+        const existing = drawRef.current;
+        if (existing && existing.mode === "poly") {
+          // Append a vertex to the click-to-add-points polyline.
+          const frame = framesRef.current.find((f) => f.id === existing.frameId);
+          if (!frame) {
+            cancelDraft();
+            return;
+          }
+          const local = worldToFrameLocal(frame, world);
+          existing.points = [
+            ...existing.points,
+            {
+              x: clamp01(local.x / frame.width),
+              y: clamp01(local.y / frame.height),
+            },
+          ];
+          setDraft({
+            frameId: existing.frameId,
+            kind: existing.kind,
+            endStyle: existing.endStyle,
+            points: existing.points,
+          });
+          return;
+        }
+
+        // Start a new draft — must begin on a frame (lines are parented).
+        const frame = frameAtPoint(framesRef.current, world);
+        if (!frame) return;
+        const local = worldToFrameLocal(frame, world);
+        const p0 = {
+          x: clamp01(local.x / frame.width),
+          y: clamp01(local.y / frame.height),
+        };
+        drawRef.current = {
+          pointerId: e.pointerId,
+          frameId: frame.id,
+          kind: tool.kind,
+          endStyle: tool.endStyle,
+          points: [p0],
+          mode: "pending",
+          downClient: { x: e.clientX, y: e.clientY },
+          lastSampleClient: { x: e.clientX, y: e.clientY },
+        };
+        setDraft({
+          frameId: frame.id,
+          kind: tool.kind,
+          endStyle: tool.endStyle,
+          points: [p0],
+        });
+        setDraftCursor(null);
+        e.currentTarget.setPointerCapture(e.pointerId);
+        return;
+      }
+
       const target = e.target as Element | null;
       const frameId = target?.getAttribute("data-frame-id") ?? null;
       const handleAttr = target?.getAttribute("data-handle") ?? null;
@@ -549,17 +761,34 @@ export function Canvas({
         onSelectElement({ frameId, elementId });
         const cursor = clientToWorld(e.clientX, e.clientY);
         const local = worldToFrameLocal(frame, cursor);
-        // Offset in normalized frame space so the element stays under the
-        // cursor regardless of frame size/rotation.
-        elementDragRef.current = {
-          pointerId: e.pointerId,
-          frameId,
-          elementId,
-          grabOffset: {
-            x: el.position.x - local.x / frame.width,
-            y: el.position.y - local.y / frame.height,
-          },
-        };
+        if (el.type === "player") {
+          // Offset in normalized frame space so the token stays under the
+          // cursor regardless of frame size/rotation.
+          elementDragRef.current = {
+            pointerId: e.pointerId,
+            frameId,
+            elementId,
+            kind: "player",
+            grabOffset: {
+              x: el.position.x - local.x / frame.width,
+              y: el.position.y - local.y / frame.height,
+            },
+          };
+        } else {
+          // Path: capture all points + the grab fraction so the whole line
+          // translates rigidly with the cursor.
+          elementDragRef.current = {
+            pointerId: e.pointerId,
+            frameId,
+            elementId,
+            kind: "path",
+            startPoints: el.points.map((p) => ({ ...p })),
+            downFrac: {
+              x: local.x / frame.width,
+              y: local.y / frame.height,
+            },
+          };
+        }
         setInteracting(true);
         e.currentTarget.setPointerCapture(e.pointerId);
         return;
@@ -668,7 +897,7 @@ export function Canvas({
       }
       e.currentTarget.setPointerCapture(e.pointerId);
     },
-    [onSelectionChange, onSelectElement, clientToWorld],
+    [onSelectionChange, onSelectElement, clientToWorld, cancelDraft],
   );
 
   const onPointerMove = useCallback(
@@ -686,18 +915,86 @@ export function Canvas({
 
       const pxPerFt = viewportRef.current.zoom * PX_PER_FT_AT_100;
 
+      // Drawing a movement line.
+      const draw = drawRef.current;
+      if (draw) {
+        const frame = framesRef.current.find((f) => f.id === draw.frameId);
+        if (!frame) return;
+        const world = clientToWorld(e.clientX, e.clientY);
+        const local = worldToFrameLocal(frame, world);
+        const frac = {
+          x: clamp01(local.x / frame.width),
+          y: clamp01(local.y / frame.height),
+        };
+        if (draw.mode === "poly") {
+          // Rubber-band to the cursor; the pointer is no longer captured.
+          setDraftCursor(frac);
+          return;
+        }
+        if (e.pointerId !== draw.pointerId) return;
+        const movedPx = Math.hypot(
+          e.clientX - draw.downClient.x,
+          e.clientY - draw.downClient.y,
+        );
+        if (draw.mode === "pending" && movedPx > DRAW_DRAG_PX) {
+          draw.mode = "freehand";
+        }
+        if (draw.mode === "freehand") {
+          const sampleDist = Math.hypot(
+            e.clientX - draw.lastSampleClient.x,
+            e.clientY - draw.lastSampleClient.y,
+          );
+          if (sampleDist >= DRAW_SAMPLE_PX) {
+            draw.points = [...draw.points, frac];
+            draw.lastSampleClient = { x: e.clientX, y: e.clientY };
+            setDraft({
+              frameId: draw.frameId,
+              kind: draw.kind,
+              endStyle: draw.endStyle,
+              points: draw.points,
+            });
+          }
+        }
+        return;
+      }
+
       const elemDrag = elementDragRef.current;
       if (elemDrag && e.pointerId === elemDrag.pointerId) {
         const frame = framesRef.current.find((f) => f.id === elemDrag.frameId);
         if (!frame) return;
         const cursor = clientToWorld(e.clientX, e.clientY);
         const local = worldToFrameLocal(frame, cursor);
-        onUpdateElement(elemDrag.frameId, elemDrag.elementId, {
-          position: {
-            x: clamp01(local.x / frame.width + elemDrag.grabOffset.x),
-            y: clamp01(local.y / frame.height + elemDrag.grabOffset.y),
-          },
-        });
+        if (elemDrag.kind === "player" && elemDrag.grabOffset) {
+          onUpdateElement(elemDrag.frameId, elemDrag.elementId, {
+            position: {
+              x: clamp01(local.x / frame.width + elemDrag.grabOffset.x),
+              y: clamp01(local.y / frame.height + elemDrag.grabOffset.y),
+            },
+          });
+          return;
+        }
+        if (elemDrag.kind === "path" && elemDrag.startPoints && elemDrag.downFrac) {
+          const pts = elemDrag.startPoints;
+          const xs = pts.map((p) => p.x);
+          const ys = pts.map((p) => p.y);
+          const minX = Math.min(...xs);
+          const maxX = Math.max(...xs);
+          const minY = Math.min(...ys);
+          const maxY = Math.max(...ys);
+          // Clamp the whole-line delta so every point stays within [0,1],
+          // preserving the line's shape (no per-point distortion).
+          const dx = Math.max(
+            -minX,
+            Math.min(1 - maxX, local.x / frame.width - elemDrag.downFrac.x),
+          );
+          const dy = Math.max(
+            -minY,
+            Math.min(1 - maxY, local.y / frame.height - elemDrag.downFrac.y),
+          );
+          onUpdateElement(elemDrag.frameId, elemDrag.elementId, {
+            points: pts.map((p) => ({ x: p.x + dx, y: p.y + dy })),
+          });
+        }
         return;
       }
 
@@ -795,7 +1092,26 @@ export function Canvas({
     ],
   );
 
-  const endPointer = useCallback((e: PointerEvent<SVGSVGElement>) => {
+  const endPointer = useCallback(
+    (e: PointerEvent<SVGSVGElement>) => {
+    // Drawing: a freehand drag commits on release; a near-stationary press
+    // (a click) promotes the draft into click-to-add-points (poly) mode.
+    const draw = drawRef.current;
+    if (draw && e.pointerId === draw.pointerId) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+      if (draw.mode === "freehand") {
+        commitDraft();
+      } else {
+        draw.mode = "poly";
+        setDraftCursor(null);
+      }
+      return;
+    }
+
     let released = false;
 
     const panDrag = panDragRef.current;
@@ -847,7 +1163,18 @@ export function Canvas({
         // Pointer capture may already be released; ignore.
       }
     }
-  }, []);
+    },
+    [commitDraft],
+  );
+
+  // Double-click finishes a click-to-add-points line.
+  const onDoubleClick = useCallback(() => {
+    const d = drawRef.current;
+    if (d && d.mode === "poly") {
+      if (d.points.length >= 2) commitDraft();
+      else cancelDraft();
+    }
+  }, [commitDraft, cancelDraft]);
 
   // HTML5 drag-and-drop (sidebar → canvas).
   const isCanvasDrag = (e: DragEvent<SVGSVGElement>) =>
@@ -918,7 +1245,9 @@ export function Canvas({
       ? "grabbing"
       : spaceHeld
         ? "grab"
-        : "default";
+        : activeTool !== "select"
+          ? "crosshair"
+          : "default";
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-white">
@@ -930,6 +1259,7 @@ export function Canvas({
         onPointerMove={onPointerMove}
         onPointerUp={endPointer}
         onPointerCancel={endPointer}
+        onDoubleClick={onDoubleClick}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
@@ -1030,6 +1360,40 @@ export function Canvas({
               }
             />
           ))}
+
+          {/* Live preview of the movement line being drawn. */}
+          {(() => {
+            if (!draft) return null;
+            const frame = frames.find((f) => f.id === draft.frameId);
+            if (!frame) return null;
+            const pts = draftCursor
+              ? [...draft.points, draftCursor]
+              : draft.points;
+            if (pts.length < 2) return null;
+            const worldPts = pts.map((p) => ({
+              x: frame.position.x + p.x * frame.width,
+              y: frame.position.y + p.y * frame.height,
+            }));
+            const cx = frame.position.x + frame.width / 2;
+            const cy = frame.position.y + frame.height / 2;
+            return (
+              <g
+                transform={
+                  frame.rotation
+                    ? `rotate(${frame.rotation} ${cx} ${cy})`
+                    : undefined
+                }
+                opacity={0.85}
+              >
+                <PathShape
+                  worldPoints={worldPts}
+                  kind={draft.kind}
+                  endStyle={draft.endStyle}
+                  scale={frame.height / RINK_NOMINAL_HEIGHT_FT}
+                />
+              </g>
+            );
+          })()}
         </g>
       </svg>
 
@@ -1047,6 +1411,19 @@ export function Canvas({
 
       {dragHover && (
         <div className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-sky-400/70 bg-sky-50/30" />
+      )}
+
+      {activeTool !== "select" && (
+        <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2">
+          <div className="rounded-md border border-sky-200 bg-white/90 px-3 py-1.5 text-xs text-slate-700 shadow-sm backdrop-blur">
+            Drawing{" "}
+            <span className="font-semibold text-slate-900">
+              {toolDef(activeTool)?.label}
+            </span>{" "}
+            · drag to sketch, or click points then{" "}
+            <kbd className="font-sans">↵</kbd>/double-click · <kbd className="font-sans">Esc</kbd> cancels
+          </div>
+        </div>
       )}
 
       {frames.length === 0 && !dragHover && (

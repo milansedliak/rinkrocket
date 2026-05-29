@@ -6,10 +6,15 @@ import { Canvas } from "@/components/canvas/canvas";
 import { FrameSidebar } from "@/components/sidebar/frame-sidebar";
 import {
   clonePlacedFrame,
+  createPath,
   createPlayer,
   getFrameTemplate,
   placeFrameFromTemplate,
+  type DrawToolId,
   type FrameKind,
+  type PathElement,
+  type PathEndStyle,
+  type PathKind,
   type PlacedFrame,
   type PlayerElement,
   type PlayerTeam,
@@ -17,6 +22,9 @@ import {
 
 /** Which child element (if any) is selected, identified by frame + element. */
 type ElementSelection = { frameId: string; elementId: string } | null;
+
+/** Active canvas tool: select, or one of the movement draw tools. */
+export type Tool = "select" | DrawToolId;
 
 /**
  * Editor layout: infinite canvas on the left, frames sidebar on the right.
@@ -27,6 +35,7 @@ export function Editor() {
   const [frames, setFrames] = useState<PlacedFrame[]>([]);
   const [selectedFrameIds, setSelectedFrameIds] = useState<string[]>([]);
   const [selectedElement, setSelectedElement] = useState<ElementSelection>(null);
+  const [activeTool, setActiveTool] = useState<Tool>("select");
 
   // In-memory clipboard for copy/paste (not the OS clipboard — frames are
   // structured data, and this keeps paste working without clipboard perms).
@@ -126,15 +135,40 @@ export function Editor() {
     [],
   );
 
+  const handleAddPath = useCallback(
+    (
+      frameId: string,
+      kind: PathKind,
+      endStyle: PathEndStyle,
+      points: ReadonlyArray<{ x: number; y: number }>,
+    ) => {
+      const path = createPath(kind, endStyle, points);
+      setFrames((prev) =>
+        prev.map((f) =>
+          f.id === frameId ? { ...f, elements: [...f.elements, path] } : f,
+        ),
+      );
+      setSelectedFrameIds([]);
+      setSelectedElement({ frameId, elementId: path.id });
+    },
+    [],
+  );
+
   const handleUpdateElement = useCallback(
-    (frameId: string, elementId: string, partial: Partial<PlayerElement>) => {
+    (
+      frameId: string,
+      elementId: string,
+      partial: Partial<PlayerElement> | Partial<PathElement>,
+    ) => {
       setFrames((prev) =>
         prev.map((f) =>
           f.id === frameId
             ? {
                 ...f,
                 elements: f.elements.map((el) =>
-                  el.id === elementId ? { ...el, ...partial } : el,
+                  el.id === elementId
+                    ? ({ ...el, ...partial } as typeof el)
+                    : el,
                 ),
               }
             : f,
@@ -169,6 +203,8 @@ export function Editor() {
           frames={frames}
           selectedFrameIds={selectedFrameIds}
           selectedElement={selectedElement}
+          activeTool={activeTool}
+          onToolChange={setActiveTool}
           onAddFrame={handleAddFrame}
           onSelectionChange={handleSelectionChange}
           onUpdateFrame={handleUpdateFrame}
@@ -178,12 +214,13 @@ export function Editor() {
           onPasteFrames={handlePasteFrames}
           onDuplicateFrames={handleDuplicateFrames}
           onAddPlayer={handleAddPlayer}
+          onAddPath={handleAddPath}
           onSelectElement={handleSelectElement}
           onUpdateElement={handleUpdateElement}
           onDeleteElement={handleDeleteElement}
         />
       </div>
-      <FrameSidebar />
+      <FrameSidebar activeTool={activeTool} onToolChange={setActiveTool} />
     </div>
   );
 }

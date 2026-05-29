@@ -1,11 +1,25 @@
-import { FRAME_TEMPLATES, type PlayerTeam } from "@/lib/frame";
+import {
+  FRAME_TEMPLATES,
+  PATH_TOOLS,
+  type DrawToolId,
+  type PlayerTeam,
+} from "@/lib/frame";
 
 import { FrameCard } from "./frame-card";
 import { PlayerCard } from "./player-card";
+import { MovementToolButton, SelectToolButton } from "./movement-tools";
 
 const PLAYER_TEAMS: PlayerTeam[] = ["team-a", "team-b"];
 
-export function FrameSidebar() {
+type Tool = "select" | DrawToolId;
+
+export function FrameSidebar({
+  activeTool,
+  onToolChange,
+}: {
+  activeTool: Tool;
+  onToolChange: (tool: Tool) => void;
+}) {
   return (
     <aside className="flex h-full w-72 shrink-0 flex-col border-l border-slate-200 bg-slate-50/70">
       <div className="flex-1 overflow-y-auto">
@@ -39,6 +53,29 @@ export function FrameSidebar() {
               </li>
             ))}
           </ul>
+        </section>
+
+        <section>
+          <header className="border-y border-slate-200 px-4 py-3">
+            <h2 className="text-sm font-semibold text-slate-900">Movement</h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Pick a line, then drag (or click points) on a frame. Esc finishes.
+            </p>
+          </header>
+          <div className="space-y-2 p-3">
+            <SelectToolButton
+              active={activeTool === "select"}
+              onClick={() => onToolChange("select")}
+            />
+            {PATH_TOOLS.map((tool) => (
+              <MovementToolButton
+                key={tool.id}
+                tool={tool}
+                active={activeTool === tool.id}
+                onClick={() => onToolChange(tool.id)}
+              />
+            ))}
+          </div>
         </section>
       </div>
     </aside>

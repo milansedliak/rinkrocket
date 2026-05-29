@@ -9,6 +9,7 @@ import {
 } from "@/lib/frame";
 import { RinkMarkings } from "./rink-markings";
 import { PlayerView } from "./player-element";
+import { PathView } from "./path-element";
 
 const SELECTION_COLOR = "rgb(14, 165, 233)"; // sky-500
 
@@ -153,25 +154,46 @@ export function PlacedFrameView({
         {frame.label}
       </text>
 
-      {/* Parented child elements (players). Rendered above the body/markings
-          and the border move-band so a click hits the element, not the frame.
-          They inherit the frame's rotation via this same <g>. */}
-      {frame.elements.map((el) =>
-        el.type === "player" ? (
-          <PlayerView
-            key={el.id}
-            el={el}
-            frameId={frame.id}
-            originX={frame.position.x}
-            originY={frame.position.y}
-            frameW={frame.width}
-            frameH={frame.height}
-            pxPerFt={pxPerFt}
-            selected={el.id === selectedElementId}
-            spaceHeld={spaceHeld}
-          />
-        ) : null,
-      )}
+      {/* Parented child elements. Rendered above the body/markings and the
+          border move-band so a click hits the element, not the frame. They
+          inherit the frame's rotation via this same <g>. Movement lines are
+          drawn first so player tokens sit on top of them. */}
+      {frame.elements
+        .filter((el) => el.type === "path")
+        .map((el) =>
+          el.type === "path" ? (
+            <PathView
+              key={el.id}
+              el={el}
+              frameId={frame.id}
+              originX={frame.position.x}
+              originY={frame.position.y}
+              frameW={frame.width}
+              frameH={frame.height}
+              pxPerFt={pxPerFt}
+              selected={el.id === selectedElementId}
+              spaceHeld={spaceHeld}
+            />
+          ) : null,
+        )}
+      {frame.elements
+        .filter((el) => el.type === "player")
+        .map((el) =>
+          el.type === "player" ? (
+            <PlayerView
+              key={el.id}
+              el={el}
+              frameId={frame.id}
+              originX={frame.position.x}
+              originY={frame.position.y}
+              frameW={frame.width}
+              frameH={frame.height}
+              pxPerFt={pxPerFt}
+              selected={el.id === selectedElementId}
+              spaceHeld={spaceHeld}
+            />
+          ) : null,
+        )}
 
       {selected && (
         <path

@@ -75,8 +75,60 @@ export type PlayerElement = {
   role?: PlayerRole;
 };
 
+/**
+ * Movement line categories, following standard hockey diagram notation:
+ *  - skate    : forward skating (no puck)       — solid line
+ *  - carry    : skating with the puck           — wavy "squiggle"
+ *  - pass     : puck pass                        — dashed line
+ *  - shot     : shot on net                      — solid line + cross tick
+ *  - backward : backward skating                 — line with small loops
+ */
+export type PathKind = "skate" | "carry" | "pass" | "shot" | "backward";
+
+/** How a movement line terminates: an arrowhead, a hockey-stop bar, or bare. */
+export type PathEndStyle = "arrow" | "stop" | "none";
+
+export type PathElement = {
+  type: "path";
+  id: string;
+  kind: PathKind;
+  /**
+   * Ordered normalized control points in [0, 1] of the parent frame (same
+   * convention as players). The renderer smooths them into a curve.
+   */
+  points: { x: number; y: number }[];
+  endStyle: PathEndStyle;
+};
+
 /** Union of all drill elements. Grows as more primitives are added. */
-export type DrillElement = PlayerElement;
+export type DrillElement = PlayerElement | PathElement;
+
+/**
+ * Movement tools exposed in the sidebar. Each maps to a `PathKind` plus an end
+ * style. "Skate + stop" reuses the skate line but ends in a hockey-stop bar.
+ */
+export type DrawToolId =
+  | "skate"
+  | "carry"
+  | "pass"
+  | "shot"
+  | "backward"
+  | "stop";
+
+export const PATH_TOOLS: ReadonlyArray<{
+  id: DrawToolId;
+  label: string;
+  description: string;
+  kind: PathKind;
+  endStyle: PathEndStyle;
+}> = [
+  { id: "skate", label: "Skate", description: "Forward skating", kind: "skate", endStyle: "arrow" },
+  { id: "carry", label: "Puck carry", description: "Skating with the puck", kind: "carry", endStyle: "arrow" },
+  { id: "pass", label: "Pass", description: "Puck pass", kind: "pass", endStyle: "arrow" },
+  { id: "shot", label: "Shot", description: "Shot on net", kind: "shot", endStyle: "arrow" },
+  { id: "backward", label: "Backward", description: "Backward skating", kind: "backward", endStyle: "arrow" },
+  { id: "stop", label: "Skate + stop", description: "Skate then stop", kind: "skate", endStyle: "stop" },
+];
 
 export type PlacedFrame = {
   id: string;
@@ -358,6 +410,33 @@ export function createPlayer(
   };
 }
 
+/** Build a new movement-line element from normalized ([0,1]) control points. */
+export function createPath(
+  kind: PathKind,
+  endStyle: PathEndStyle,
+  points: ReadonlyArray<{ x: number; y: number }>,
+): PathElement {
+  return {
+    type: "path",
+    id: generateElementId(),
+    kind,
+    endStyle,
+    points: points.map((p) => ({ x: p.x, y: p.y })),
+  };
+}
+
+/** Deep-clone a drill element with a fresh id (used by frame duplicate). */
+export function cloneElement(el: DrillElement): DrillElement {
+  if (el.type === "player") {
+    return { ...el, id: generateElementId(), position: { ...el.position } };
+  }
+  return {
+    ...el,
+    id: generateElementId(),
+    points: el.points.map((p) => ({ ...p })),
+  };
+}
+
 /**
  * Convert a world-space point into a frame's local (unrotated) coordinates,
  * measured in feet from the frame's top-left corner. This is the inverse of
@@ -453,11 +532,7 @@ export function clonePlacedFrame(
     },
     roundedCorners: [...frame.roundedCorners],
     // Deep-copy child elements with fresh ids so the copy is independent.
-    elements: frame.elements.map((el) => ({
-      ...el,
-      id: generateElementId(),
-      position: { ...el.position },
-    })),
+    elements: frame.elements.map(cloneElement),
   };
 }
 
