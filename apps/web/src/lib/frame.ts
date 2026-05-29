@@ -101,8 +101,8 @@ export const FRAME_TEMPLATES: readonly FrameTemplate[] = [
   {
     kind: "offensive-zone",
     label: "Offensive zone",
-    description: "64 × 85 ft — goal line to blue line",
-    width: 64,
+    description: "75 × 85 ft — blue line to end boards",
+    width: 75,
     height: 85,
     cornerRadiusRatio: NHL_CORNER_RATIO,
     roundedCorners: ["tr", "br"],
@@ -110,8 +110,8 @@ export const FRAME_TEMPLATES: readonly FrameTemplate[] = [
   {
     kind: "defensive-zone",
     label: "Defensive zone",
-    description: "64 × 85 ft — blue line to goal line",
-    width: 64,
+    description: "75 × 85 ft — end boards to blue line",
+    width: 75,
     height: 85,
     cornerRadiusRatio: NHL_CORNER_RATIO,
     roundedCorners: ["tl", "bl"],
@@ -304,6 +304,30 @@ export function placeFrameFromTemplate(
     cornerRadiusRatio: template.cornerRadiusRatio,
     roundedCorners: template.roundedCorners,
     rotation: 0,
+  };
+}
+
+/** World-space offset (feet) applied to a pasted/duplicated frame so the copy
+ *  is visibly nudged off its source instead of landing exactly on top. */
+export const PASTE_OFFSET_FT = 20;
+
+/**
+ * Clone a placed frame as a brand-new instance: fresh id, all other properties
+ * deep-copied, and the position nudged down-right by `offset` so the copy is
+ * distinguishable from its source. Used by copy/paste and duplicate.
+ */
+export function clonePlacedFrame(
+  frame: PlacedFrame,
+  offset = PASTE_OFFSET_FT,
+): PlacedFrame {
+  return {
+    ...frame,
+    id: generateFrameId(),
+    position: {
+      x: frame.position.x + offset,
+      y: frame.position.y + offset,
+    },
+    roundedCorners: [...frame.roundedCorners],
   };
 }
 

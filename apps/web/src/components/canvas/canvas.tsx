@@ -36,14 +36,53 @@ type Viewport = {
   zoom: number;
 };
 
+type FrameUpdate = { id: string; partial: Partial<PlacedFrame> };
+
 type CanvasProps = {
   frames: PlacedFrame[];
-  selectedFrameId: string | null;
+  selectedFrameIds: string[];
   onAddFrame: (kind: FrameKind, worldPos: Vec) => void;
-  onSelectFrame: (id: string | null) => void;
+  onSelectionChange: (ids: string[]) => void;
+  /** Single-frame update — used by resize/rotate of the sole selected frame. */
   onUpdateFrame: (id: string, partial: Partial<PlacedFrame>) => void;
-  onDeleteFrame: (id: string) => void;
+  /** Batched update — used by group move so all frames shift in one render. */
+  onUpdateFrames: (updates: ReadonlyArray<FrameUpdate>) => void;
+  onDeleteFrames: (ids: ReadonlyArray<string>) => void;
+  onCopyFrames: (frames: ReadonlyArray<PlacedFrame>) => void;
+  onPasteFrames: () => void;
+  onDuplicateFrames: (frames: ReadonlyArray<PlacedFrame>) => void;
 };
+
+/**
+ * Compute the next selection after a click on `frameId`.
+ * - additive (Shift): toggle the frame in/out of the current set.
+ * - plain: if already selected keep the set (so a group stays draggable),
+ *   otherwise select only this frame.
+ */
+function nextSelection(
+  current: ReadonlyArray<string>,
+  frameId: string,
+  additive: boolean,
+): string[] {
+  if (additive) {
+    return current.includes(frameId)
+      ? current.filter((id) => id !== frameId)
+      : [...current, frameId];
+  }
+  return current.includes(frameId) ? [...current] : [frameId];
+}
+
+/** AABB overlap test between a frame's (unrotated) bbox and a world rect. */
+function frameIntersectsRect(
+  frame: PlacedFrame,
+  r: { x0: number; y0: number; x1: number; y1: number },
+): boolean {
+  const fx0 = frame.position.x;
+  const fy0 = frame.position.y;
+  const fx1 = fx0 + frame.width;
+  const fy1 = fy0 + frame.height;
+  return fx0 <= r.x1 && fx1 >= r.x0 && fy0 <= r.y1 && fy1 >= r.y0;
+}
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
@@ -69,31 +108,44 @@ const radToDeg = (r: number) => (r * 180) / Math.PI;
  * drag-and-drop of frame templates from the sidebar. Placed frames are
  * selectable, movable, resizable, and rotatable.
  *
+ * Selection is a set of frame ids. Resize/rotate handles only appear when
+ * exactly one frame is selected; multi-select supports group move, copy,
+ * duplicate, and delete.
+ *
  * Interaction priority on pointer-down:
  *   1. Space held or middle mouse        → pan
- *   2. Hit a corner's rotate zone        → rotate around bbox center
- *   3. Hit a resize handle               → resize
- *   4. Hit the name label or border edge → select + start move
+ *   2. Hit a corner's rotate zone        → rotate around bbox center (sole sel)
+ *   3. Hit a resize handle               → resize (sole sel)
+ *   4. Hit the name label or border edge → select + start group move
  *   5. Hit the frame interior            → select only (no move)
- *   6. Empty background                  → deselect (if any selected)
+ *   6. Empty background                  → marquee select (Shift adds)
+ *
+ * Shift+click a frame toggles it in/out of the selection.
  *
  * Keyboard:
  *   - Space + drag        → pan
  *   - Wheel / pinch       → zoom around cursor
  *   - + / -               → zoom around center
  *   - 0 or F              → reset viewport
- *   - R / Shift+R         → rotate selected frame ±15°
+ *   - R / Shift+R         → rotate selected frames ±15°
  *   - Drag rotate         → free; hold Shift to snap to 15°
+ *   - ⌘/Ctrl A            → select all
+ *   - ⌘/Ctrl C / V        → copy / paste selection (cascades on repeat)
+ *   - ⌘/Ctrl D            → duplicate selection
  *   - Esc                 → deselect
- *   - Backspace / Delete  → delete selected frame
+ *   - Backspace / Delete  → delete selection
  */
 export function Canvas({
   frames,
-  selectedFrameId,
+  selectedFrameIds,
   onAddFrame,
-  onSelectFrame,
+  onSelectionChange,
   onUpdateFrame,
-  onDeleteFrame,
+  onUpdateFrames,
+  onDeleteFrames,
+  onCopyFrames,
+  onPasteFrames,
+  onDuplicateFrames,
 }: CanvasProps) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -106,6 +158,13 @@ export function Canvas({
   const [panning, setPanning] = useState(false);
   const [interacting, setInteracting] = useState(false); // move or resize active
   const [dragHover, setDragHover] = useState(false);
+  // Rubber-band selection rectangle in screen px (relative to the svg).
+  const [marquee, setMarquee] = useState<{
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  } | null>(null);
 
   // Refs to avoid stale closures inside long-lived listeners.
   const viewportRef = useRef(viewport);
@@ -116,8 +175,8 @@ export function Canvas({
   spaceHeldRef.current = spaceHeld;
   const framesRef = useRef(frames);
   framesRef.current = frames;
-  const selectedFrameIdRef = useRef(selectedFrameId);
-  selectedFrameIdRef.current = selectedFrameId;
+  const selectedFrameIdsRef = useRef(selectedFrameIds);
+  selectedFrameIdsRef.current = selectedFrameIds;
 
   const panDragRef = useRef<{
     pointerId: number;
@@ -125,11 +184,21 @@ export function Canvas({
     startPan: Vec;
   } | null>(null);
 
+  // Group move: capture each moving frame's start position so the whole
+  // selection translates together by the same world delta.
   const moveDragRef = useRef<{
     pointerId: number;
-    frameId: string;
     startClient: Vec;
-    startPos: Vec;
+    starts: ReadonlyArray<{ id: string; pos: Vec }>;
+  } | null>(null);
+
+  // Marquee (rubber-band) drag from empty background.
+  const marqueeRef = useRef<{
+    pointerId: number;
+    startClient: Vec;
+    /** Selection that existed before the drag (used when Shift-adding). */
+    base: ReadonlyArray<string>;
+    additive: boolean;
   } | null>(null);
 
   const resizeDragRef = useRef<{
@@ -262,34 +331,72 @@ export function Canvas({
         return;
       }
       if (e.key === "Escape") {
-        if (selectedFrameIdRef.current !== null) {
+        if (selectedFrameIdsRef.current.length > 0) {
           e.preventDefault();
-          onSelectFrame(null);
+          onSelectionChange([]);
         }
         return;
       }
       if (e.key === "Backspace" || e.key === "Delete") {
-        const id = selectedFrameIdRef.current;
-        if (id) {
+        const ids = selectedFrameIdsRef.current;
+        if (ids.length) {
           e.preventDefault();
-          onDeleteFrame(id);
+          onDeleteFrames([...ids]);
         }
         return;
       }
+
+      const mod = e.metaKey || e.ctrlKey;
+
+      // Select all.
+      if (mod && (e.key === "a" || e.key === "A")) {
+        e.preventDefault();
+        onSelectionChange(framesRef.current.map((f) => f.id));
+        return;
+      }
+
+      // Clipboard: Cmd/Ctrl + C copy, V paste, D duplicate (Figma-style).
+      // All operate on the full selection.
+      const selectedFrames = () =>
+        framesRef.current.filter((f) =>
+          selectedFrameIdsRef.current.includes(f.id),
+        );
+      if (mod && (e.key === "c" || e.key === "C")) {
+        const sel = selectedFrames();
+        if (!sel.length) return;
+        e.preventDefault();
+        onCopyFrames(sel);
+        return;
+      }
+      if (mod && (e.key === "v" || e.key === "V")) {
+        e.preventDefault();
+        onPasteFrames();
+        return;
+      }
+      if (mod && (e.key === "d" || e.key === "D")) {
+        const sel = selectedFrames();
+        if (!sel.length) return;
+        e.preventDefault();
+        onDuplicateFrames(sel);
+        return;
+      }
+
       // Plain R / Shift+R only — never swallow Ctrl+R or Cmd+R, those are
-      // the browser's reload shortcut.
+      // the browser's reload shortcut. Rotates every selected frame about its
+      // own center.
       if ((e.key === "r" || e.key === "R") && !e.ctrlKey && !e.metaKey) {
-        const id = selectedFrameIdRef.current;
-        if (!id) return;
-        const frame = framesRef.current.find((f) => f.id === id);
-        if (!frame) return;
+        const sel = selectedFrames();
+        if (!sel.length) return;
         e.preventDefault();
         const dir = e.shiftKey ? -1 : 1;
-        onUpdateFrame(id, {
-          rotation: normalizeRotation(
-            frame.rotation + dir * ROTATE_KEY_STEP_DEG,
-          ),
-        });
+        onUpdateFrames(
+          sel.map((f) => ({
+            id: f.id,
+            partial: {
+              rotation: normalizeRotation(f.rotation + dir * ROTATE_KEY_STEP_DEG),
+            },
+          })),
+        );
         return;
       }
     };
@@ -311,6 +418,8 @@ export function Canvas({
       moveDragRef.current = null;
       resizeDragRef.current = null;
       rotateDragRef.current = null;
+      marqueeRef.current = null;
+      setMarquee(null);
       setPanning(false);
       setInteracting(false);
     };
@@ -323,7 +432,16 @@ export function Canvas({
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
     };
-  }, [zoomAt, resetViewport, onSelectFrame, onDeleteFrame, onUpdateFrame]);
+  }, [
+    zoomAt,
+    resetViewport,
+    onSelectionChange,
+    onDeleteFrames,
+    onUpdateFrames,
+    onCopyFrames,
+    onPasteFrames,
+    onDuplicateFrames,
+  ]);
 
   /** Convert a clientX/Y to world coords using the current viewport. */
   const clientToWorld = useCallback((clientX: number, clientY: number): Vec => {
@@ -369,7 +487,7 @@ export function Canvas({
         const frame = framesRef.current.find((f) => f.id === frameId);
         if (!frame) return;
         e.preventDefault();
-        onSelectFrame(frameId);
+        onSelectionChange([frameId]);
         const center = frameCenter(frame);
         const cursor = clientToWorld(e.clientX, e.clientY);
         rotateDragRef.current = {
@@ -389,7 +507,7 @@ export function Canvas({
         const frame = framesRef.current.find((f) => f.id === frameId);
         if (!frame) return;
         e.preventDefault();
-        onSelectFrame(frameId);
+        onSelectionChange([frameId]);
         resizeDragRef.current = {
           pointerId: e.pointerId,
           frameId,
@@ -410,15 +528,21 @@ export function Canvas({
       //    a move handle, so dragging inside the frame won't drag the whole
       //    thing once it holds objects.
       if (frameId && moveAttr) {
-        const frame = framesRef.current.find((f) => f.id === frameId);
-        if (!frame) return;
         e.preventDefault();
-        onSelectFrame(frameId);
+        const additive = e.shiftKey;
+        const sel = nextSelection(
+          selectedFrameIdsRef.current,
+          frameId,
+          additive,
+        );
+        onSelectionChange(sel);
+        // Shift-click just toggles membership — it does not start a drag.
+        if (additive) return;
+        const moving = framesRef.current.filter((f) => sel.includes(f.id));
         moveDragRef.current = {
           pointerId: e.pointerId,
-          frameId,
           startClient: { x: e.clientX, y: e.clientY },
-          startPos: { ...frame.position },
+          starts: moving.map((f) => ({ id: f.id, pos: { ...f.position } })),
         };
         setInteracting(true);
         e.currentTarget.setPointerCapture(e.pointerId);
@@ -428,16 +552,37 @@ export function Canvas({
       // 5. Frame interior — select only (no move).
       if (frameId) {
         e.preventDefault();
-        onSelectFrame(frameId);
+        onSelectionChange(
+          nextSelection(selectedFrameIdsRef.current, frameId, e.shiftKey),
+        );
         return;
       }
 
-      // 6. Background — deselect.
-      if (selectedFrameIdRef.current !== null) {
-        onSelectFrame(null);
+      // 6. Empty background — start a marquee (rubber-band) selection. A plain
+      //    press clears the current selection; Shift adds to it.
+      e.preventDefault();
+      const rect = svgRef.current?.getBoundingClientRect();
+      const additive = e.shiftKey;
+      marqueeRef.current = {
+        pointerId: e.pointerId,
+        startClient: { x: e.clientX, y: e.clientY },
+        base: additive ? [...selectedFrameIdsRef.current] : [],
+        additive,
+      };
+      if (!additive && selectedFrameIdsRef.current.length > 0) {
+        onSelectionChange([]);
       }
+      if (rect) {
+        setMarquee({
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top,
+          w: 0,
+          h: 0,
+        });
+      }
+      e.currentTarget.setPointerCapture(e.pointerId);
     },
-    [onSelectFrame, clientToWorld],
+    [onSelectionChange, clientToWorld],
   );
 
   const onPointerMove = useCallback(
@@ -459,12 +604,12 @@ export function Canvas({
       if (moveDrag && e.pointerId === moveDrag.pointerId) {
         const dxw = (e.clientX - moveDrag.startClient.x) / pxPerFt;
         const dyw = (e.clientY - moveDrag.startClient.y) / pxPerFt;
-        onUpdateFrame(moveDrag.frameId, {
-          position: {
-            x: moveDrag.startPos.x + dxw,
-            y: moveDrag.startPos.y + dyw,
-          },
-        });
+        onUpdateFrames(
+          moveDrag.starts.map((s) => ({
+            id: s.id,
+            partial: { position: { x: s.pos.x + dxw, y: s.pos.y + dyw } },
+          })),
+        );
         return;
       }
 
@@ -502,8 +647,45 @@ export function Canvas({
         });
         return;
       }
+
+      const marqueeDrag = marqueeRef.current;
+      if (marqueeDrag && e.pointerId === marqueeDrag.pointerId) {
+        const rect = svgRef.current?.getBoundingClientRect();
+        if (rect) {
+          const sx = marqueeDrag.startClient.x - rect.left;
+          const sy = marqueeDrag.startClient.y - rect.top;
+          const cx = e.clientX - rect.left;
+          const cy = e.clientY - rect.top;
+          setMarquee({
+            x: Math.min(sx, cx),
+            y: Math.min(sy, cy),
+            w: Math.abs(cx - sx),
+            h: Math.abs(cy - sy),
+          });
+        }
+        // Live selection: frames touched by the world-space marquee rect.
+        const a = clientToWorld(
+          marqueeDrag.startClient.x,
+          marqueeDrag.startClient.y,
+        );
+        const b = clientToWorld(e.clientX, e.clientY);
+        const worldRect = {
+          x0: Math.min(a.x, b.x),
+          y0: Math.min(a.y, b.y),
+          x1: Math.max(a.x, b.x),
+          y1: Math.max(a.y, b.y),
+        };
+        const hits = framesRef.current
+          .filter((f) => frameIntersectsRect(f, worldRect))
+          .map((f) => f.id);
+        const next = marqueeDrag.additive
+          ? Array.from(new Set([...marqueeDrag.base, ...hits]))
+          : hits;
+        onSelectionChange(next);
+        return;
+      }
     },
-    [onUpdateFrame, clientToWorld],
+    [onUpdateFrame, onUpdateFrames, onSelectionChange, clientToWorld],
   );
 
   const endPointer = useCallback((e: PointerEvent<SVGSVGElement>) => {
@@ -528,6 +710,12 @@ export function Canvas({
     const rotateDrag = rotateDragRef.current;
     if (rotateDrag && e.pointerId === rotateDrag.pointerId) {
       rotateDragRef.current = null;
+      released = true;
+    }
+    const marqueeDrag = marqueeRef.current;
+    if (marqueeDrag && e.pointerId === marqueeDrag.pointerId) {
+      marqueeRef.current = null;
+      setMarquee(null);
       released = true;
     }
 
@@ -710,12 +898,27 @@ export function Canvas({
               key={frame.id}
               frame={frame}
               pxPerFt={pxPerFt}
-              selected={frame.id === selectedFrameId}
+              selected={selectedFrameIds.includes(frame.id)}
+              showHandles={
+                selectedFrameIds.length === 1 && selectedFrameIds[0] === frame.id
+              }
               spaceHeld={spaceHeld}
             />
           ))}
         </g>
       </svg>
+
+      {marquee && (marquee.w > 0 || marquee.h > 0) && (
+        <div
+          className="pointer-events-none absolute border border-sky-400 bg-sky-400/10"
+          style={{
+            left: marquee.x,
+            top: marquee.y,
+            width: marquee.w,
+            height: marquee.h,
+          }}
+        />
+      )}
 
       {dragHover && (
         <div className="pointer-events-none absolute inset-0 ring-2 ring-inset ring-sky-400/70 bg-sky-50/30" />
@@ -740,8 +943,9 @@ export function Canvas({
           <kbd className="font-sans">space</kbd> + drag · pan &nbsp;·&nbsp;{" "}
           <kbd className="font-sans">wheel</kbd> · zoom &nbsp;·&nbsp;{" "}
           <kbd className="font-sans">0</kbd> · reset &nbsp;·&nbsp;{" "}
-          drag corner edge · rotate &nbsp;·&nbsp;{" "}
-          <kbd className="font-sans">R</kbd> · 15° &nbsp;·&nbsp;{" "}
+          drag bg · marquee &nbsp;·&nbsp;{" "}
+          <kbd className="font-sans">⇧</kbd> click · multi &nbsp;·&nbsp;{" "}
+          <kbd className="font-sans">⌘D</kbd> · duplicate &nbsp;·&nbsp;{" "}
           <kbd className="font-sans">⌫</kbd> · delete
         </div>
       </div>

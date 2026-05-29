@@ -119,30 +119,34 @@ function geometryFor(kind: FrameKind): RinkGeometry {
       };
     }
     case "offensive-zone": {
-      // Rounded boards on the right; goal line 11 ft from that end, blue line
-      // at the left (cut) edge.
-      const zone = endZone(33); // goal(53) − 20
+      // The rightmost 75 ft of the rink (blue line → end boards), so all
+      // markings line up 1:1 with the full rink at the same scale. Rounded
+      // boards on the right; blue line at the left (cut) edge; goal line 11 ft
+      // from the boards (75 − 11 = 64).
+      const zone = endZone(44); // goal(64) − 20
       return {
-        w: 64,
+        w: 75,
         h: 85,
         lines: [
-          { x: 1, kind: "blue" },
-          { x: 53, kind: "goal" },
+          { x: 0.5, kind: "blue" },
+          { x: 64, kind: "goal" },
         ],
         circles: zone.circles,
         spots: zone.spots,
-        creases: [{ x: 53, dir: -1 }],
+        creases: [{ x: 64, dir: -1 }],
       };
     }
     case "defensive-zone": {
-      // Mirror of offensive zone: rounded boards on the left.
+      // Mirror: the leftmost 75 ft of the rink (end boards → blue line).
+      // Rounded boards on the left; goal line 11 ft from them; blue line at the
+      // right (cut) edge.
       const zone = endZone(31); // goal(11) + 20
       return {
-        w: 64,
+        w: 75,
         h: 85,
         lines: [
           { x: 11, kind: "goal" },
-          { x: 63, kind: "blue" },
+          { x: 74.5, kind: "blue" },
         ],
         circles: zone.circles,
         spots: zone.spots,

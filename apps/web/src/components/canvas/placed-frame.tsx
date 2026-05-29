@@ -64,11 +64,15 @@ export function PlacedFrameView({
   frame,
   pxPerFt,
   selected,
+  showHandles,
   spaceHeld,
 }: {
   frame: PlacedFrame;
   pxPerFt: number;
+  /** Part of the current selection — draws the dashed outline. */
   selected: boolean;
+  /** Sole selected frame — also draws resize + rotate handles. */
+  showHandles: boolean;
   spaceHeld: boolean;
 }) {
   const stroke = 2 / pxPerFt;
@@ -146,16 +150,18 @@ export function PlacedFrameView({
       </text>
 
       {selected && (
-        <>
-          <path
-            d={framePath}
-            fill="none"
-            stroke={SELECTION_COLOR}
-            strokeWidth={selStroke}
-            strokeDasharray={`${dashOn} ${dashOff}`}
-            style={{ pointerEvents: "none" }}
-          />
+        <path
+          d={framePath}
+          fill="none"
+          stroke={SELECTION_COLOR}
+          strokeWidth={selStroke}
+          strokeDasharray={`${dashOn} ${dashOff}`}
+          style={{ pointerEvents: "none" }}
+        />
+      )}
 
+      {showHandles && (
+        <>
           {HANDLES.map((h) => {
             const cx = frame.position.x + h.fx * frame.width;
             const cy = frame.position.y + h.fy * frame.height;

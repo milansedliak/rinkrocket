@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { Canvas } from "@/components/canvas/canvas";
 import { FrameSidebar } from "@/components/sidebar/frame-sidebar";
 import {
+  clonePlacedFrame,
   getFrameTemplate,
   placeFrameFromTemplate,
   type FrameKind,
@@ -13,12 +14,16 @@ import {
 
 /**
  * Editor layout: infinite canvas on the left, frames sidebar on the right.
- * Owns the list of placed frames + the current selection so canvas and sidebar
- * can stay focused on rendering/interaction.
+ * Owns the list of placed frames + the current selection (a set of ids) so
+ * canvas and sidebar can stay focused on rendering/interaction.
  */
 export function Editor() {
   const [frames, setFrames] = useState<PlacedFrame[]>([]);
-  const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
+  const [selectedFrameIds, setSelectedFrameIds] = useState<string[]>([]);
+
+  // In-memory clipboard for copy/paste (not the OS clipboard — frames are
+  // structured data, and this keeps paste working without clipboard perms).
+  const clipboardRef = useRef<PlacedFrame[] | null>(null);
 
   const handleAddFrame = useCallback(
     (kind: FrameKind, worldPos: { x: number; y: number }) => {
@@ -26,7 +31,7 @@ export function Editor() {
       if (!template) return;
       const placed = placeFrameFromTemplate(template, worldPos);
       setFrames((prev) => [...prev, placed]);
-      setSelectedFrameId(placed.id);
+      setSelectedFrameIds([placed.id]);
     },
     [],
   );
@@ -40,21 +45,65 @@ export function Editor() {
     [],
   );
 
-  const handleDeleteFrame = useCallback((id: string) => {
-    setFrames((prev) => prev.filter((f) => f.id !== id));
-    setSelectedFrameId((current) => (current === id ? null : current));
+  const handleUpdateFrames = useCallback(
+    (updates: ReadonlyArray<{ id: string; partial: Partial<PlacedFrame> }>) => {
+      if (updates.length === 0) return;
+      const byId = new Map(updates.map((u) => [u.id, u.partial]));
+      setFrames((prev) =>
+        prev.map((f) => {
+          const partial = byId.get(f.id);
+          return partial ? { ...f, ...partial } : f;
+        }),
+      );
+    },
+    [],
+  );
+
+  const handleDeleteFrames = useCallback((ids: ReadonlyArray<string>) => {
+    if (ids.length === 0) return;
+    const remove = new Set(ids);
+    setFrames((prev) => prev.filter((f) => !remove.has(f.id)));
+    setSelectedFrameIds((prev) => prev.filter((id) => !remove.has(id)));
   }, []);
+
+  const handleCopyFrames = useCallback((toCopy: ReadonlyArray<PlacedFrame>) => {
+    clipboardRef.current = toCopy.length ? toCopy.map((f) => ({ ...f })) : null;
+  }, []);
+
+  const handlePasteFrames = useCallback(() => {
+    const src = clipboardRef.current;
+    if (!src || src.length === 0) return;
+    const copies = src.map((f) => clonePlacedFrame(f));
+    setFrames((prev) => [...prev, ...copies]);
+    setSelectedFrameIds(copies.map((c) => c.id));
+    // Advance the clipboard so repeated pastes cascade down-right.
+    clipboardRef.current = copies;
+  }, []);
+
+  const handleDuplicateFrames = useCallback(
+    (toDup: ReadonlyArray<PlacedFrame>) => {
+      if (toDup.length === 0) return;
+      const copies = toDup.map((f) => clonePlacedFrame(f));
+      setFrames((prev) => [...prev, ...copies]);
+      setSelectedFrameIds(copies.map((c) => c.id));
+    },
+    [],
+  );
 
   return (
     <div className="flex h-full w-full overflow-hidden">
       <div className="relative flex-1">
         <Canvas
           frames={frames}
-          selectedFrameId={selectedFrameId}
+          selectedFrameIds={selectedFrameIds}
           onAddFrame={handleAddFrame}
-          onSelectFrame={setSelectedFrameId}
+          onSelectionChange={setSelectedFrameIds}
           onUpdateFrame={handleUpdateFrame}
-          onDeleteFrame={handleDeleteFrame}
+          onUpdateFrames={handleUpdateFrames}
+          onDeleteFrames={handleDeleteFrames}
+          onCopyFrames={handleCopyFrames}
+          onPasteFrames={handlePasteFrames}
+          onDuplicateFrames={handleDuplicateFrames}
         />
       </div>
       <FrameSidebar />
