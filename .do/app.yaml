@@ -1,0 +1,12 @@
+# DigitalOcean App Platform spec — commit this so deploys use Node.js, not TypeScript.
+# Docs: https://docs.digitalocean.com/products/app-platform/reference/app-spec/
+name: rinkrocket
+services:
+  - name: web
+    environment_slug: node-js
+    source_dir: /
+    build_command: pnpm install --frozen-lockfile && pnpm build
+    run_command: pnpm start
+    http_port: 3000
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
